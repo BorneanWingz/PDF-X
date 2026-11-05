@@ -4,12 +4,11 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-engines/
-models/
-config.json
+/config.json
 .pytest_cache/
 pytest-run.log
 pytest-err.log
 samples-out/
-pycache/
-*.egg-info/
+# runtime asset folders beside the exe (root-level only, never src packages)
+/engines/
+/models/
