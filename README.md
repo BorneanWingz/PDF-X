@@ -16,9 +16,14 @@ Portable, offline PDF converter and OCR toolbox for internal team use.
 | --- | --- |
 | PDF | PNG, JPG, TIF, TXT, HTML, XLSX (tables), PPTX |
 | PDF (scanned) | Searchable PDF (invisible OCR text layer), TXT |
+| 2+ PDFs | Merged PDF (`--to merge`, "PDF (merge all inputs)") |
 | PNG, JPG, TIF, BMP, WebP | PDF |
 | TXT, MD | PDF |
 | DOC, DOCX, XLS, XLSX, PPT, PPTX, ODT, ODS, ODP, RTF, CSV | PDF (requires LibreOffice engine) |
+
+Merge notes: output pages follow the listed input order exactly; the merged
+file is `<first_name>_merged.pdf` beside the first input, and an existing
+file is never overwritten (a ` (1)` suffix is chosen instead).
 
 ## Layout
 

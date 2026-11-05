@@ -16,7 +16,13 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__, promo
 from .config import load_config, save_config
-from .convert import convert_many, list_targets, parse_pages
+from .convert import (
+    convert_many,
+    is_merge_target,
+    list_targets,
+    merge_pdfs,
+    parse_pages,
+)
 from .engines import ConversionError, EngineUnavailable
 
 
@@ -206,8 +212,11 @@ class App:
         options: list[tuple[str, str]] = []
         notes: list[str] = []
         seen: set[str] = set()
+        # NOTE: "PDF (merge all inputs)" appears only when the current file
+        # list holds two or more PDFs; merge operates on the list, not a file
+        pdf_count = sum(1 for src in self.files if src.suffix.lower() == ".pdf")
         for src in self.files:
-            for option in list_targets(src):
+            for option in list_targets(src, pdf_count):
                 if option.key in seen:
                     continue
                 seen.add(option.key)
@@ -237,15 +246,20 @@ class App:
 
     def _current_target_key(self) -> str:
         selection = self.target_var.get()
+        pdf_count = sum(1 for src in self.files if src.suffix.lower() == ".pdf")
         for src in self.files:
-            for option in list_targets(src):
+            for option in list_targets(src, pdf_count):
                 if self._label_for(option) == selection:
                     return option.key
         return selection.split(" ")[0].lower()
 
     def _update_option_state(self) -> None:
+        # NOTE: page selection applies to per-file conversions only - a merge
+        # takes whole documents, so the field is disabled for that target
         has_pdf = any(src.suffix.lower() == ".pdf" for src in self.files)
-        self.pages_entry.configure(state="normal" if has_pdf else "disabled")
+        merge_selected = is_merge_target(self._current_target_key())
+        state = "normal" if (has_pdf and not merge_selected) else "disabled"
+        self.pages_entry.configure(state=state)
 
     def _update_output_state(self) -> None:
         """Disable the folder field and Browse when writing beside inputs.
@@ -315,10 +329,22 @@ class App:
             self.events.put(("progress", (done, total)))
 
         try:
+            if is_merge_target(target):
+                # NOTE: merge is its own event type because it returns ONE
+                # file for the whole selection, unlike the per-source results
+                # convert_many() produces
+                result = merge_pdfs(inputs, out_dir=out_dir)
+                pdfs = [src for src in inputs if src.suffix.lower() == ".pdf"]
+                self.events.put(
+                    ("merge-done", (result, len(pdfs)))
+                )
+                return
             results = convert_many(
                 inputs, target, out_dir, dpi, ocr_dpi, pages, on_progress=on_progress
             )
             self.events.put(("done", results))
+        except (ConversionError, EngineUnavailable) as exc:
+            self.events.put(("merge-failed", str(exc)))
         except Exception as exc:  # noqa: BLE001 - last-resort guard for the UI thread
             self.events.put(("fatal", str(exc)))
 
@@ -332,6 +358,16 @@ class App:
                     self.status_var.set(f"Page {done}/{total}")
                 elif kind == "done":
                     self._render_results(payload)
+                elif kind == "merge-done":
+                    result, pdf_count = payload
+                    self._log(f"ok      merged {pdf_count} PDF(s) -> {result}")
+                    self.status_var.set("Merge complete")
+                    self.convert_button.configure(state="normal")
+                    self.progress.configure(value=self.progress["maximum"])
+                elif kind == "merge-failed":
+                    self._log(f"FAILED  merge: {payload}")
+                    self.status_var.set("Merge failed")
+                    self.convert_button.configure(state="normal")
                 elif kind == "fatal":
                     self._log(f"FATAL: {payload}")
                     self.status_var.set("Failed")

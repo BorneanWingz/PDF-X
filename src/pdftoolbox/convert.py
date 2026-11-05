@@ -9,12 +9,13 @@ from pathlib import Path
 from . import plugins
 from .config import load_config
 from .engines import ConversionError, EngineUnavailable
-from .engines import images_pdf, markdown_pdf, office, pdf_pptx, pdf_render
+from .engines import images_pdf, markdown_pdf, office, pdf_merge, pdf_pptx, pdf_render
 from .engines import pdf_tables, pdf_text, searchable_pdf, text_pdf
 from .engines import ocr as ocr_engine
 
 PDF_TARGETS = ["png", "jpg", "tif", "txt", "html", "xlsx", "pptx", "searchable-pdf", "docx"]
 TO_PDF_IMAGE_TARGET = "pdf"
+MERGE_TARGET = "merge"
 _ALIASES = {
     "jpeg": "jpg",
     "tiff": "tif",
@@ -24,6 +25,11 @@ _ALIASES = {
     "ocr": "searchable-pdf",
     "ocr-pdf": "searchable-pdf",
     "markdown": "md",
+    # merging is an operation over MULTIPLE inputs, not a file conversion;
+    # these aliases all mean "combine the listed PDFs into one"
+    "combine": "merge",
+    "concat": "merge",
+    "merge-pdf": "merge",
 }
 
 
@@ -38,6 +44,35 @@ class TargetOption:
 def normalize_target(target: str) -> str:
     key = target.strip().lower().lstrip(".")
     return _ALIASES.get(key, key)
+
+
+def is_merge_target(target: str) -> bool:
+    """True for merge/combine requests (an operation over several PDFs)."""
+    return normalize_target(target) == MERGE_TARGET
+
+
+def merge_pdfs(
+    sources: list[Path],
+    out_path: Path | None = None,
+    out_dir: Path | None = None,
+) -> Path:
+    """Merge the PDF inputs into one file, in the given order.
+
+    NOTE: out_path names the exact target file (CLI --out x.pdf) and wins
+    over out_dir; with neither, "<first_stem>_merged.pdf" lands beside the
+    first input. Non-PDF inputs are ignored - the GUI passes the whole list.
+    """
+    pdfs = [
+        Path(src).resolve()
+        for src in sources
+        if Path(src).suffix.lower() == ".pdf"
+    ]
+    if len(pdfs) < 2:
+        raise ConversionError("merging needs at least two PDF files")
+    if out_path is None:
+        folder = Path(out_dir) if out_dir else pdfs[0].parent
+        out_path = folder / f"{pdfs[0].stem}_merged.pdf"
+    return pdf_merge.merge_pdf_files(pdfs, Path(out_path))
 
 
 def _plugin_targets() -> dict[str, plugins.PluginInfo]:
@@ -61,16 +96,25 @@ def _accepts_pages(convert_fn) -> bool:
     return "pages" in signature.parameters
 
 
-def list_targets(src: Path) -> list[TargetOption]:
-    """Targets offered for one input file, with availability notes."""
+def list_targets(src: Path, pdf_inputs: int = 0) -> list[TargetOption]:
+    """Targets offered for one input file, with availability notes.
+
+    NOTE: pdf_inputs is the number of PDFs in the whole selection; merging
+    only makes sense with two or more, which is why it is a parameter and
+    not derived from src alone.
+    """
     suffix = src.suffix.lower()
     plugin_map = _plugin_targets()
 
     if suffix == ".pdf":
-        options = [
+        options: list[TargetOption] = []
+        if pdf_inputs >= 2:
+            # listed first so a multi-PDF selection defaults to merging
+            options.append(TargetOption(MERGE_TARGET, "PDF (merge all inputs)", True))
+        options.extend(
             TargetOption(key, key.upper(), True)
             for key in ["png", "jpg", "tif", "txt", "html", "xlsx", "pptx", "searchable-pdf"]
-        ]
+        )
         if "docx" in plugin_map:
             info = plugin_map["docx"]
             note = "AGPL plugin."
@@ -141,6 +185,13 @@ def convert(
     if not src.is_file():
         raise ConversionError(f"input file not found: {src}")
     key = normalize_target(target)
+    if key == MERGE_TARGET:
+        # NOTE: merging needs the whole input set at once, so the single-file
+        # convert() path rejects it - callers use merge_pdfs() instead
+        raise ConversionError(
+            "merging combines several PDFs at once; use merge_pdfs() with all "
+            "inputs (CLI: pass every file with --to merge)"
+        )
     config = load_config()
     dpi = dpi or int(config.get("dpi", 150))
     ocr_dpi = ocr_dpi or int(config.get("ocr_dpi", 200))

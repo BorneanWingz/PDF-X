@@ -7,7 +7,14 @@ import sys
 from pathlib import Path
 
 from . import __version__, plugins
-from .convert import convert, convert_many, list_targets, parse_pages
+from .convert import (
+    convert,
+    convert_many,
+    is_merge_target,
+    list_targets,
+    merge_pdfs,
+    parse_pages,
+)
 from .engines import ConversionError, EngineUnavailable
 from .engines import office
 from .paths import config_path, plugins_dir
@@ -22,10 +29,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--to",
         metavar="TARGET",
-        help="conversion target, e.g. png, jpg, tif, txt, html, xlsx, pptx, "
-        "searchable-pdf, docx, pdf",
+        help="conversion target: png, jpg, tif, txt, html, xlsx, pptx, "
+        "searchable-pdf, docx, pdf, or merge (combine two or more PDFs)",
     )
-    parser.add_argument("--out", type=Path, help="output folder (default: beside input)")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="output folder (default: beside input); for merge, a .pdf path "
+        "names the exact merged file instead",
+    )
     parser.add_argument("--dpi", type=int, help="render DPI for images and PPTX (default 150)")
     parser.add_argument("--ocr-dpi", type=int, help="render DPI for OCR (default 200)")
     parser.add_argument("--pages", help="page selection, e.g. 1-3,5 (PDF only)")
@@ -94,9 +106,11 @@ def _cmd_doctor() -> int:
 
 
 def _cmd_list_targets(files: list[Path]) -> int:
+    # NOTE: merge appears in the listing only when the selection has 2+ PDFs
+    pdf_count = sum(1 for path in files if path.suffix.lower() == ".pdf")
     for src in files:
         print(f"{src.name}:")
-        options = list_targets(src)
+        options = list_targets(src, pdf_count)
         if not options:
             print("  (no conversions available for this file type)")
             continue
@@ -126,6 +140,28 @@ def _cmd_convert(args) -> int:
     if missing:
         print(f"error: input not found: {', '.join(missing)}", file=sys.stderr)
         return 2
+
+    if is_merge_target(args.to):
+        # NOTE: merge is one operation over MANY files, so it bypasses the
+        # per-file loop below; --out is either the exact .pdf target or the
+        # folder, depending on its suffix
+        pdf_inputs = [
+            path.resolve() for path in args.files if path.suffix.lower() == ".pdf"
+        ]
+        out_path = None
+        out_dir = None
+        if args.out is not None:
+            if args.out.suffix.lower() == ".pdf":
+                out_path = args.out
+            else:
+                out_dir = args.out
+        try:
+            result = merge_pdfs(pdf_inputs, out_path=out_path, out_dir=out_dir)
+        except (ConversionError, EngineUnavailable) as exc:
+            print(f"FAILED  merge: {exc}", file=sys.stderr)
+            return 1
+        print(f"ok      merged {len(pdf_inputs)} PDF(s) -> {result}")
+        return 0
 
     results = convert_many(
         [path.resolve() for path in args.files],

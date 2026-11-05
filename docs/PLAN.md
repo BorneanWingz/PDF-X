@@ -22,6 +22,7 @@ corporate IT environment, with a future path to an Android build.
 | --- | --- | --- |
 | PDF render to image | pypdfium2 (PDFium) | Apache-2.0 / BSD |
 | PDF text / HTML | pypdf | BSD-3 |
+| PDF merge | pypdf | BSD-3 |
 | PDF tables to XLSX | pdfplumber + openpyxl | MIT |
 | PDF to PPTX | python-pptx | MIT |
 | Image to PDF | Pillow | MIT-CMU |

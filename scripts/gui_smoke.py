@@ -34,6 +34,15 @@ def main() -> int:
     assert str(app.out_entry["state"]) == "disabled", "entry should be disabled"
     assert str(app.browse_button["state"]) == "disabled", "browse should be disabled"
 
+    # merge target must disable the Pages field (whole-document operation)
+    from pathlib import Path as _Path
+
+    fake_pdfs = [_Path("a.pdf"), _Path("b.pdf")]
+    app.files = list(fake_pdfs)
+    app._refresh_targets()
+    assert app.target_var.get() == "PDF (merge all inputs)", "merge should default first"
+    assert str(app.pages_entry["state"]) == "disabled", "pages disabled for merge"
+
     root.update_idletasks()
     root.destroy()
     print("GUI smoke: OK")
