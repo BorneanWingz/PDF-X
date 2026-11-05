@@ -13,6 +13,9 @@ import pypdfium2 as pdfium
 from ..paths import models_dir
 from . import ConversionError, EngineUnavailable
 
+# Module-level OCR engine cache: RapidOCR/ONNX initialisation costs seconds,
+# so it happens once per process. _engine_dir tracks the configured model set
+# so switching models in models/rapidocr invalidates the cache.
 _engine = None
 _engine_dir: str | None = None
 
@@ -91,6 +94,8 @@ def _parse_result(raw) -> tuple[list[OcrLine], float]:
         return lines, 0.0
     total_score = 0.0
     for item in raw:
+        # NOTE: RapidOCR returns each detected box as a 4-point polygon;
+        # collapse it to an axis-aligned (x0, y0, x1, y1) rectangle here
         box, text, score = item[0], item[1], float(item[2])
         xs = [point[0] for point in box]
         ys = [point[1] for point in box]
@@ -116,7 +121,9 @@ def ocr_image(image: Image.Image) -> tuple[list[OcrLine], float]:
     except Exception as exc:  # noqa: BLE001
         raise ConversionError(f"OCR failed: {exc}") from exc
     lines, _ = _parse_result(raw)
-    # RapidOCR's second value is a list of per-stage timings, not one number
+    # NOTE: RapidOCR's second value is a list of per-stage timings (summed
+    # here); some versions return a single float, and anything unexpected
+    # falls back to wall-clock time - this exact mismatch was a past bug.
     if isinstance(detail, (int, float)):
         elapsed = float(detail)
     elif isinstance(detail, (list, tuple)) and detail and all(

@@ -13,6 +13,9 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# NOTE: internal adds the AGPL pdf2docx extra; clean omits it. The spec file
+# reads PDFTOOLBOX_BUILD_MODE (set above) and excludes those modules in clean
+# mode, so a clean zip carries no AGPL code for store distribution.
 $env:PDFTOOLBOX_BUILD_MODE = $Mode
 Write-Host "== PDF Toolbox build ($Mode) ==" -ForegroundColor Cyan
 
@@ -26,6 +29,8 @@ if (-not $SkipInstall) {
 }
 
 # pyinstaller ships in the dev extra; guarded for -SkipInstall runs
+# NOTE: --no-sync everywhere after the initial install: uv run would
+# otherwise undo pyinstaller's populate step or prune the agpl extra
 $pyi = uv run --no-sync python -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null
 if ($LASTEXITCODE -ne 0) { throw "pyinstaller missing; run: uv sync --extra dev" }
 Write-Host "PyInstaller $pyi" -ForegroundColor Cyan

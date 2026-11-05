@@ -70,6 +70,8 @@ def office_to_pdf(src: Path, out_dir: Path) -> Path:
 
     cmd = [
         str(soffice),
+        # NOTE: a private user profile beside the app keeps LibreOffice from
+        # writing to %APPDATA% and colliding with an installed LibreOffice
         f"-env:UserInstallation={profile.resolve().as_uri()}",
         "--headless",
         "--norestore",
@@ -92,6 +94,8 @@ def office_to_pdf(src: Path, out_dir: Path) -> Path:
             f"LibreOffice timed out after {_TIMEOUT_SECONDS}s on {src.name}"
         ) from exc
 
+    # NOTE: check the output file FIRST - soffice can exit 0 without
+    # producing a PDF (e.g. locked profile), so return code alone lies
     expected = out_dir / f"{src.stem}.pdf"
     if expected.exists():
         return expected

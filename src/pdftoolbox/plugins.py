@@ -24,6 +24,10 @@ from .paths import plugins_dir
 
 @dataclass
 class PluginInfo:
+    """State of one plugin. NOTE: load_error and hint are deliberately
+    separate - a malformed plugin is an ERROR (bug), while available()==False
+    is merely "unavailable" (missing optional dependency, normal)."""
+
     name: str
     targets: list[str]
     convert: Callable[[Path, Path], Path] | None = None
@@ -42,6 +46,8 @@ class PluginInfo:
 
 
 def _load_plugin_file(path: Path) -> PluginInfo:
+    # NOTE: plugins load from a path at runtime (they sit next to the exe,
+    # not on sys.path), so importlib's file-location loader is used here
     module_name = f"pdftoolbox_plugin_{path.stem}"
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
@@ -89,6 +95,8 @@ def load_plugins() -> dict[str, PluginInfo]:
     if not folder.is_dir():
         return found
     for file in sorted(folder.glob("*.py")):
+        # NOTE: files starting with "_" are ignored - that convention keeps
+        # scratch/disabled plugins in the folder without loading them
         if file.name.startswith("_"):
             continue
         info = _load_plugin_file(file)

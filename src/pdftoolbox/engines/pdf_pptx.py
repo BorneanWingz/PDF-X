@@ -39,6 +39,8 @@ def pdf_to_pptx(
             width_pt, height_pt = page.get_size()
             bitmap = page.render(scale=dpi / 72.0)
             image = bitmap.to_pil()
+            # NOTE: python-pptx needs an on-disk image file, so each page is
+            # dumped to a hidden temp PNG and deleted right after embedding
             tmp = out_path.parent / f".{out_path.stem}_page{index + 1}.png"
             tmp.parent.mkdir(parents=True, exist_ok=True)
             image.save(tmp, format="PNG")

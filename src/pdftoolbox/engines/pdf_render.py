@@ -53,6 +53,8 @@ def pdf_to_images(
             page = doc[i]
             bitmap = page.render(scale=dpi / 72.0)
             image = bitmap.to_pil()
+            # NOTE: JPEG cannot store an alpha channel; PDFium can emit RGBA
+            # for pages with transparency, so force RGB for JPEG only
             if pil_format == "JPEG":
                 image = image.convert("RGB")
             out = out_dir / f"{src.stem}_page{i + 1:04d}.{ext}"

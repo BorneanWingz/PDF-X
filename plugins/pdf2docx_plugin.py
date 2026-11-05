@@ -32,7 +32,10 @@ def convert(src: Path, out_dir: Path, pages: "list[int] | None" = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{src.stem}.docx"
 
-    # pdf2docx converts one contiguous range; a page list uses its span
+    # pdf2docx converts one contiguous range; a page list uses its span.
+    # NOTE: pdf2docx (Converter.convert) accepts start/end indexes only, so
+    # --pages 2-3 maps exactly; non-contiguous lists (e.g. 1,5) widen to 1-5.
+    # The CLI contract remains "pages", this is just how the engine handles it.
     start = 0
     end = None
     if pages:

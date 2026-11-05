@@ -94,6 +94,8 @@ def markdown_to_pdf(src: Path, out_path: Path) -> Path:
 
     for raw_line in text.splitlines():
         if _CODE_FENCE_RE.match(raw_line.strip()):
+            # NOTE: fences toggle monospaced drawing; the fence line itself
+            # is consumed (not printed), matching how the block reads on screen
             in_code = not in_code
             y -= _LEADING * 0.4
             continue

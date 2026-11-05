@@ -16,6 +16,8 @@ def is_image(path: Path) -> bool:
 
 
 def _load_frames(path: Path) -> list[Image.Image]:
+    # NOTE: every frame of a multi-page TIFF becomes its own PDF page -
+    # a common scanner output format, so this is intentional not incidental
     try:
         with Image.open(path) as img:
             frames = []

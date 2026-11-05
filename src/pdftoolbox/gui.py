@@ -46,6 +46,8 @@ class App:
         self._build_promo_area()
 
         self._refresh_targets()
+        # NOTE: the queue + after() poll is the ONLY bridge from worker
+        # threads back to Tk - Tk widgets must never be touched off-thread
         self._poll_events()
 
     # ---------- layout ----------
@@ -134,6 +136,8 @@ class App:
         self._promo_url = ""
         promo_conf = self.config.get("promo", {})
         if promo_conf.get("enabled", True) and promo_conf.get("url"):
+            # NOTE: daemon=True so a hung network call can never keep the
+            # app alive after the window closes
             thread = threading.Thread(target=self._fetch_promo, args=(promo_conf,), daemon=True)
             thread.start()
 

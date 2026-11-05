@@ -12,6 +12,7 @@ from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+# NOTE: tests import the package from src/ directly (no install step needed)
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 

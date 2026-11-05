@@ -13,6 +13,8 @@ from pathlib import Path
 
 def app_dir() -> Path:
     """Directory that holds the app: exe folder when frozen, repo root in dev."""
+    # NOTE: sys.frozen is set by PyInstaller; this branch is what keeps the
+    # portable promise - config/engines/models live beside the exe
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     # src/pdftoolbox/paths.py -> repo root is three levels up

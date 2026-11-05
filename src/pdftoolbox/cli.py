@@ -108,6 +108,8 @@ def _cmd_list_targets(files: list[Path]) -> int:
 
 
 def _cmd_convert(args) -> int:
+    # NOTE: exit codes are part of the CLI contract used by scripts:
+    #   0 = all files converted, 1 = one or more failed, 2 = usage error
     if not args.files:
         print("error: no input files given (use --gui for the interface)", file=sys.stderr)
         return 2
@@ -152,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.gui or (
         not args.files
         and not args.doctor
+        # NOTE: --list-targets without files must print an ERROR, not open
+        # the GUI - forgetting this check once made the CLI hang in tests
         and not args.list_targets
     ):
         from .gui import run_gui

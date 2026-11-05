@@ -25,6 +25,8 @@ DEFAULTS: dict[str, Any] = {
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    # NOTE: one-level-deep merge so a user config that only sets "dpi"
+    # keeps every other default (e.g. promo settings) without manual upkeep
     merged = dict(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -35,6 +37,8 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
+    # NOTE: never raises - a missing/corrupt config falls back to defaults so
+    # the tool always starts, even on a locked-down or read-only machine
     target = path or config_path()
     try:
         raw = target.read_text(encoding="utf-8")

@@ -26,6 +26,8 @@ _MAX_CHARS = 120
 
 
 def _register_unicode_font() -> None:
+    # NOTE: ReportLab's built-in Helvetica is Latin-1 only; registering a
+    # system TrueType (Arial etc.) keeps accented and non-Latin text intact
     global _FONT_NAME
     for candidate in _CANDIDATE_FONTS:
         if candidate.exists():

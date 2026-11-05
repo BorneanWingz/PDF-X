@@ -38,6 +38,8 @@ binaries = []
 try:
     from PyInstaller.utils.hooks import collect_all
 
+    # NOTE: collect_all pulls RapidOCR's bundled ONNX models + data files into
+    # the bundle; without it the frozen exe starts but OCR finds no models
     for package in ("rapidocr_onnxruntime",):
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
         datas += pkg_datas
@@ -101,6 +103,8 @@ coll = COLLECT(
     a_cli.binaries,
     a_cli.datas,
     strip=False,
-    upx=False,  # packers trigger antivirus false positives; never use UPX here
+    # NOTE: UPX stays OFF - packed executables trip corporate antivirus and
+    # get colleagues' downloads quarantined (a hard requirement of this tool)
+    upx=False,
     name="PDFToolbox",
 )

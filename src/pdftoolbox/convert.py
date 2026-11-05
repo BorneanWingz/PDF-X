@@ -49,7 +49,11 @@ def _plugin_targets() -> dict[str, plugins.PluginInfo]:
 
 
 def _accepts_pages(convert_fn) -> bool:
-    """True when a plugin's convert() declares a ``pages`` parameter."""
+    """True when a plugin's convert() declares a ``pages`` parameter.
+
+    NOTE: page selection joined the plugin contract later, so older plugins
+    with ``convert(src, out_dir)`` are detected here and keep working.
+    """
     try:
         signature = inspect.signature(convert_fn)
     except (TypeError, ValueError):
@@ -161,6 +165,8 @@ def _convert_from_pdf(
     pages: list[int] | None,
     on_progress,
 ) -> list[Path]:
+    # NOTE: default output folder sits beside the source file - portable and
+    # predictable (never a temp dir that corporate cleanup tools can wipe)
     tag_dir = out_dir or src.parent / f"{src.stem}_output"
 
     if key in {"png", "jpg", "tif"}:
@@ -190,7 +196,9 @@ def _convert_from_pdf(
         out_path = tag_dir / f"{src.stem}_searchable.pdf"
         return [searchable_pdf.make_searchable_pdf(src, out_path, ocr_pages, ocr_dpi)]
 
-    # any target provided by an optional plugin (e.g. docx via pdf2docx)
+    # any target provided by an optional plugin (e.g. docx via pdf2docx).
+    # NOTE: unavailable plugins raise EngineUnavailable so callers can explain
+    # which component is missing instead of failing silently.
     plugin_info = _plugin_targets().get(key)
     if plugin_info is not None:
         if not plugin_info.available or plugin_info.convert is None:
@@ -235,6 +243,8 @@ def convert_many(
     on_progress=None,
 ) -> list[tuple[Path, "list[Path] | str"]]:
     """Convert several files; returns (source, outputs-or-error) pairs."""
+    # NOTE: per-file errors become strings instead of exceptions - one bad
+    # file must not abort a whole batch (the GUI renders them as FAILED lines)
     results: list[tuple[Path, list[Path] | str]] = []
     for src in sources:
         try:

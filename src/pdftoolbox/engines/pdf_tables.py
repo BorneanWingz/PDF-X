@@ -13,7 +13,9 @@ from . import ConversionError
 _ALL_STRATEGIES: tuple[str, dict | None] = [
     ("lines", {"vertical_strategy": "lines", "horizontal_strategy": "lines"}),
     ("text", {"vertical_strategy": "text", "horizontal_strategy": "text"}),
-    ("mixed", None),  # pdfplumber defaults handle most ruled documents
+    # NOTE: None = pdfplumber defaults; tried LAST because explicit line
+    # detection beats heuristics on ruled tables, but borderless rules need it
+    ("mixed", None),
 ]
 
 

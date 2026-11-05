@@ -22,7 +22,7 @@ _CANDIDATE_FONTS = [
     Path("C:/Windows/Fonts/arial.ttf"),
     Path("C:/Windows/Fonts/segoeui.ttf"),
 ]
-_FONT_NAME = "Helvetica"  # fallback for non-latin scripts; ASCII-safe glyphs
+_FONT_NAME = "Helvetica"  # fallback when no system TTF is found (Latin-1 only)
 
 
 def _register_font() -> None:
@@ -42,7 +42,7 @@ def _build_overlay(pages: list[OcrPage], dpi: int) -> bytes:
     _register_font()
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer)
-    scale = 72.0 / dpi  # rendered px -> PDF points
+    scale = 72.0 / dpi  # rendered pixels -> PDF points (72 points per inch)
 
     for page in pages:
         width_pt = page.width * scale
@@ -71,9 +71,13 @@ def _build_overlay(pages: list[OcrPage], dpi: int) -> bytes:
             if not text:
                 continue
             pdf.setFont(_FONT_NAME, font_size)
+            # NOTE: baseline y - OCR boxes measure from the page top while PDF
+            # coordinates grow upward, so the baseline is height - box bottom
             text_object = pdf.beginText(x0 * scale, height_pt - (y1 * scale))
             text_object.setFont(_FONT_NAME, font_size)
-            text_object.setTextRenderMode(3)  # invisible
+            text_object.setTextRenderMode(3)  # invisible text layer
+            # NOTE: render mode must be set on the text object - ReportLab 5
+            # removed Canvas.setTextRenderMode, and the canvas call crashes
             text_object.textOut(text)
             pdf.drawText(text_object)
 
@@ -102,6 +106,8 @@ def make_searchable_pdf(src: Path, out_path: Path, pages: list[OcrPage], dpi: in
         if base_index < 0 or base_index >= len(base_reader.pages):
             continue
         writer.add_page(base_reader.pages[base_index])
+        # NOTE: merge AFTER add_page - pypdf >= 5 deprecates (and warns about)
+        # merging pages that are not yet attached to a writer
         if index < len(overlay_pages):
             try:
                 writer.pages[-1].merge_page(overlay_pages[index])

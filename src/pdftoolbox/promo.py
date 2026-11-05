@@ -15,16 +15,23 @@ _USER_AGENT = "PDFToolbox/0.1 (promo-check)"
 
 
 def fetch_promo(url: str, timeout: float = 2.0) -> dict | None:
-    """Return the parsed promo dict, or None on any failure."""
+    """Return the parsed promo dict, or None on any failure.
+
+    NOTE: every failure path returns None on purpose - the banner must never
+    block startup, surface an error, or retry. See docs/PLAN.md rule 3.
+    """
     if not url:
         return None
     try:
+        # NOTE: byte cap prevents a hostile/huge response from eating memory
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(_MAX_BYTES)
         data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, dict):
             return None
+        # NOTE: anything that is not a literal JSON true/false counts as
+        # disabled, so a typo in the hosted file can never pop a banner
         if not isinstance(data.get("active"), bool):
             data["active"] = False
         return data
