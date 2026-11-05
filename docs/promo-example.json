@@ -1,0 +1,6 @@
+{
+  "active": false,
+  "message": "Prefer using this on your phone? Check out the mobile version.",
+  "url": "https://play.google.com/store/apps/details?id=REPLACE_ME",
+  "_comment": "Host this file anywhere static (GitHub Pages works). Keep active=false until the mobile build is published, then flip it and update url. The app reads it with a 2 second timeout and fails silently, so offline colleagues are never affected."
+}
