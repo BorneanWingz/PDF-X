@@ -101,15 +101,26 @@ class App:
 
         ttk.Label(frame, text="Output folder:").grid(row=1, column=2, sticky="e", padx=(12, 4))
         self.out_var = tk.StringVar(value=str(self.config.get("out_dir", "")))
-        ttk.Entry(frame, textvariable=self.out_var).grid(
-            row=1, column=3, columnspan=2, sticky="ew", pady=4
+        # NOTE: entry and button are kept as attributes so the "Output in same
+        # folder" checkbox can disable both together
+        self.out_entry = ttk.Entry(frame, textvariable=self.out_var)
+        self.out_entry.grid(row=1, column=3, columnspan=2, sticky="ew", pady=4)
+        self.browse_button = ttk.Button(frame, text="Browse", command=self.pick_output)
+        self.browse_button.grid(row=1, column=5, sticky="e", padx=6, pady=4)
+
+        self.same_folder_var = tk.BooleanVar(
+            value=bool(self.config.get("same_folder", False))
         )
-        ttk.Button(frame, text="Browse", command=self.pick_output).grid(
-            row=1, column=5, sticky="e", padx=6, pady=4
-        )
+        ttk.Checkbutton(
+            frame,
+            text="Output in same folder",
+            variable=self.same_folder_var,
+            command=self._update_output_state,
+        ).grid(row=2, column=2, columnspan=4, sticky="w", padx=(12, 4), pady=(0, 4))
+        self._update_output_state()
 
         self.target_note = ttk.Label(frame, text="", foreground="#555")
-        self.target_note.grid(row=2, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        self.target_note.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
 
     def _build_action_area(self) -> None:
         frame = ttk.Frame(self.root)
@@ -236,6 +247,17 @@ class App:
         has_pdf = any(src.suffix.lower() == ".pdf" for src in self.files)
         self.pages_entry.configure(state="normal" if has_pdf else "disabled")
 
+    def _update_output_state(self) -> None:
+        """Disable the folder field and Browse when writing beside inputs.
+
+        NOTE: disabled ttk entries still return their old text via
+        out_var.get(), so start_convert must consult same_folder_var - never
+        infer intent from the widget state.
+        """
+        state = "disabled" if self.same_folder_var.get() else "normal"
+        self.out_entry.configure(state=state)
+        self.browse_button.configure(state=state)
+
     def pick_output(self) -> None:
         folder = filedialog.askdirectory(title="Select output folder")
         if folder:
@@ -260,10 +282,17 @@ class App:
             return
 
         out_dir = Path(self.out_var.get()) if self.out_var.get().strip() else None
+        if self.same_folder_var.get():
+            # NOTE: None makes convert() write "<name>_output" beside each
+            # input file; the folder field is disabled while this is ticked
+            out_dir = None
 
         self.config["dpi"] = dpi
         self.config["ocr_dpi"] = ocr_dpi
-        self.config["out_dir"] = str(out_dir) if out_dir else ""
+        self.config["same_folder"] = self.same_folder_var.get()
+        # NOTE: persist the raw field text (not the resolved out_dir) so the
+        # folder path survives while "Output in same folder" is ticked
+        self.config["out_dir"] = self.out_var.get().strip()
         try:
             save_config(self.config)
         except OSError:

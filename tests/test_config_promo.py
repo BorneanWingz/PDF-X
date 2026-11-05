@@ -24,6 +24,13 @@ class TestConfig:
         assert loaded["promo"]["timeout_seconds"] == 2.0  # default preserved
         assert loaded["ocr_dpi"] == DEFAULTS["ocr_dpi"]
 
+    def test_same_folder_default_and_persistence(self, tmp_path: Path) -> None:
+        # NOTE: GUI checkbox state; default False so legacy configs behave
+        assert DEFAULTS["same_folder"] is False
+        target = tmp_path / "config.json"
+        save_config({"same_folder": True}, target)
+        assert load_config(target)["same_folder"] is True
+
     def test_corrupt_file_returns_defaults(self, tmp_path: Path) -> None:
         target = tmp_path / "config.json"
         target.write_text("{not json", encoding="utf-8")

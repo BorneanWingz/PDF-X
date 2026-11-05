@@ -3,6 +3,8 @@
 Portable, offline PDF converter and OCR toolbox for internal team use.
 
 - **GUI**: double-click `PDFToolbox.exe` (tkinter, no external runtime needed)
+  - "Output in same folder" checkbox: writes results beside each input file and
+    disables the Output folder field and Browse button while ticked
 - **CLI**: `PDFToolboxCLI.exe convert report.pdf --to png --dpi 200`
 - **No admin rights, no registry writes, no telemetry**: everything lives beside the executable.
 - **Offline by default**: only the optional promo banner check makes a network call, with a

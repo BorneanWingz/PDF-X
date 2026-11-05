@@ -16,6 +16,9 @@ DEFAULTS: dict[str, Any] = {
     "version": 1,
     "dpi": 150,
     "ocr_dpi": 200,
+    # same_folder: when True the GUI ignores out_dir and writes beside each
+    # input file (convert() interprets out_dir=None that way)
+    "same_folder": False,
     "promo": {
         "enabled": True,
         "url": "https://example.invalid/pdf-toolbox/promo.json",
