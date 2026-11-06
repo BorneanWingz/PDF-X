@@ -41,9 +41,6 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   sheet of its own. A real table spans most of the page width; a label/value
   block does not, and that is now the test.
 
-On the reporter's CamScanner analysis report this takes the export from
-**1 table / 6 rows / no headers** to **2 tables / 12 rows / both headers**.
-
 ## What's new in 0.1.1
 
 - **Bundled LibreOffice engine**, so Office documents convert to PDF out of the
