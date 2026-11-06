@@ -15,6 +15,7 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   - the checkbox, the DPI settings and the chosen output folder are saved in
     `config.json` and restored on the next run
   - the file pickers reopen in the folder of the last imported file
+  - files can also be dragged onto the file list to add them
   - **Pages** limits the conversion to part of a PDF: leave it blank for every
     page, or give 1-based numbers and ranges such as `1-3,5`. It applies to PDF
     input only, and merge ignores it.

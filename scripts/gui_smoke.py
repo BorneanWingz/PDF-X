@@ -6,6 +6,7 @@ import sys
 import tempfile
 import tkinter as tk
 from pathlib import Path
+from tkinterdnd2 import TkinterDnD
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -27,7 +28,7 @@ class _Stub:
 
 
 def main() -> int:
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
     root.withdraw()
     app = App(root)
 

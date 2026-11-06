@@ -47,7 +47,7 @@ try:
 
     # NOTE: collect_all pulls RapidOCR's bundled ONNX models + data files into
     # the bundle; without it the frozen exe starts but OCR finds no models
-    for package in ("rapidocr_onnxruntime",):
+    for package in ("rapidocr_onnxruntime", "tkinterdnd2"):
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
         datas += pkg_datas
         binaries += pkg_binaries

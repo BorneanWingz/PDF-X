@@ -14,6 +14,8 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from tkinterdnd2 import DND_FILES, TkinterDnD
+
 from . import __author__, __version__, promo
 from .config import load_config, save_config
 from .convert import (
@@ -148,11 +150,13 @@ class App:
     # ---------- layout ----------
 
     def _build_file_area(self) -> None:
-        frame = ttk.LabelFrame(self.convert_tab, text="Files")
+        frame = ttk.LabelFrame(self.convert_tab, text="Files (drop files here)")
         frame.pack(fill="x", padx=8, pady=(8, 4))
 
         self.file_list = tk.Listbox(frame, height=6, selectmode="extended")
         self.file_list.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.file_list.drop_target_register(DND_FILES)
+        self.file_list.dnd_bind("<<Drop>>", self._on_file_drop)
         scroll = ttk.Scrollbar(frame, command=self.file_list.yview)
         scroll.pack(side="left", fill="y", pady=6)
         self.file_list.configure(yscrollcommand=scroll.set)
@@ -285,13 +289,29 @@ class App:
         ttk.Label(frame, textvariable=self.status_var).pack(side="left")
 
     def _build_log_area(self) -> None:
-        frame = ttk.LabelFrame(self.convert_tab, text="Log")
-        frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        self.log_open = False
+        self.log_button = ttk.Button(
+            self.convert_tab,
+            text="\u25b8 Processing Log",
+            command=self._toggle_log,
+        )
+        self.log_button.pack(anchor="w", padx=8, pady=(4, 0))
+        frame = ttk.LabelFrame(self.convert_tab, text="Processing Log")
+        self.log_frame = frame
         self.log = tk.Text(frame, height=10, wrap="word", state="disabled")
         self.log.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
         scroll = ttk.Scrollbar(frame, command=self.log.yview)
         scroll.pack(side="left", fill="y", pady=6)
         self.log.configure(yscrollcommand=scroll.set)
+
+    def _toggle_log(self) -> None:
+        if self.log_open:
+            self.log_frame.pack_forget()
+            self.log_button.configure(text="\u25b8 Processing Log")
+        else:
+            self.log_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+            self.log_button.configure(text="\u25be Processing Log")
+        self.log_open = not self.log_open
 
     def _build_promo_area(self) -> None:
         self.promo_label = tk.Label(self.convert_tab, text="", anchor="w", fg="#0a58ca", cursor="hand2")
@@ -324,7 +344,25 @@ class App:
         )
         ttk.Label(info, text=__version__).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=2)
 
+        coffee = ttk.Frame(self.about_tab)
+        coffee.pack(side="bottom", anchor="w", padx=16, pady=16)
+        ttk.Label(coffee, text="Like what I built? Consider ").pack(side="left")
+        coffee_link = tk.Label(
+            coffee,
+            text="buying me a cuppa",
+            fg="#0a58ca",
+            cursor="hand2",
+            font=("TkDefaultFont", 9, "underline"),
+        )
+        coffee_link.pack(side="left")
+        coffee_link.bind("<Button-1>", self._open_coffee_link)
+        ttk.Label(coffee, text="!").pack(side="left")
+
     # ---------- file selection ----------
+
+    def _on_file_drop(self, event) -> None:
+        paths = self.root.tk.splitlist(event.data)
+        self._add_paths([Path(path) for path in paths])
 
     def add_files(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -670,9 +708,13 @@ class App:
         if self._promo_url:
             webbrowser.open(self._promo_url)
 
+    @staticmethod
+    def _open_coffee_link(_event) -> None:
+        webbrowser.open("https://buymeacoffee.com/DrLwSii")
+
 
 def run_gui() -> int:
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
     App(root)
     root.mainloop()
     return 0

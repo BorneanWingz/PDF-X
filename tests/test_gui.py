@@ -6,11 +6,16 @@ these tests run anywhere; the interactive checks live in scripts/gui_smoke.py.
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
-pytest.importorskip("tkinter")
+tk = pytest.importorskip("tkinter")
 
+from pdftoolbox.gui import App  # noqa: E402
 from pdftoolbox.gui import output_undecided  # noqa: E402
+from pdftoolbox import gui as gui_module  # noqa: E402
 
 
 class TestOutputUndecided:
@@ -29,3 +34,68 @@ class TestOutputUndecided:
 
     def test_whitespace_field_without_checkbox_prompts(self) -> None:
         assert output_undecided(False, "   ")
+
+
+def test_drop_splits_multiple_paths_with_spaces() -> None:
+    class DropHarness:
+        root = SimpleNamespace(tk=tk.Tcl())
+
+        def _add_paths(self, paths: list[Path]) -> None:
+            self.paths = paths
+
+    harness = DropHarness()
+    App._on_file_drop(
+        harness,
+        SimpleNamespace(data="{C:/My Files/report.pdf} {D:/other file.pdf}"),
+    )
+
+    assert harness.paths == [
+        Path("C:/My Files/report.pdf"),
+        Path("D:/other file.pdf"),
+    ]
+
+
+def test_processing_log_toggle_opens_and_closes() -> None:
+    class Widget:
+        def __init__(self) -> None:
+            self.options = {}
+            self.forgot = False
+
+        def pack(self, **options) -> None:
+            self.options = options
+
+        def pack_forget(self) -> None:
+            self.forgot = True
+
+        def configure(self, **options) -> None:
+            self.options = options
+
+    harness = SimpleNamespace(
+        log_open=False,
+        log_button=Widget(),
+        log_frame=Widget(),
+    )
+
+    App._toggle_log(harness)
+    assert harness.log_open
+    assert harness.log_frame.options == {
+        "fill": "both",
+        "expand": True,
+        "padx": 8,
+        "pady": (2, 8),
+    }
+    assert harness.log_button.options["text"] == "\u25be Processing Log"
+
+    App._toggle_log(harness)
+    assert not harness.log_open
+    assert harness.log_frame.forgot
+    assert harness.log_button.options["text"] == "\u25b8 Processing Log"
+
+
+def test_coffee_link_opens_donation_page(monkeypatch) -> None:
+    opened = []
+    monkeypatch.setattr(gui_module.webbrowser, "open", opened.append)
+
+    App._open_coffee_link(None)
+
+    assert opened == ["https://buymeacoffee.com/DrLwSii"]
