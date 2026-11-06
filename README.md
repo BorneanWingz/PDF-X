@@ -1,6 +1,6 @@
 # PDF-X
 
-**Version 0.1.1**
+**Version 0.1.2**
 
 Portable, offline PDF converter and OCR toolbox for internal team use.
 Build and release notes: [docs/PLAN.md](docs/PLAN.md).
@@ -27,6 +27,21 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 - **No admin rights, no registry writes, no telemetry**: everything lives beside the executable.
 - **Offline by default**: only the optional promo banner check makes a network call, with a
   2-second timeout and silent failure.
+
+## What's new in 0.1.2
+
+- **Every table on a scanned page now reaches its own sheet.** A lab report that
+  stacks two tables used to export only the first one, and the column header row
+  was dropped from it — which is what "OCR did not recognise all the tables"
+  actually was. Tables are now split by column layout *and* by the vertical gap
+  between them, and a header that OCR groups as its own band is folded back in.
+- **Address blocks no longer become tables.** A two-column `Ref No : ...` /
+  `From : ...` block has the same shape as a table, so it used to land on a
+  sheet of its own. A real table spans most of the page width; a label/value
+  block does not, and that is now the test.
+
+On the reporter's CamScanner analysis report this takes the export from
+**1 table / 6 rows / no headers** to **2 tables / 12 rows / both headers**.
 
 ## What's new in 0.1.1
 

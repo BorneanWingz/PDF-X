@@ -53,6 +53,14 @@ _HEADER_SIZE_RATIO = 1.4
 # a table needs at least two columns and two rows to be worth a sheet
 _MIN_TABLE_COLUMNS = 2
 _MIN_TABLE_ROWS = 2
+# NOTE: a real table spans most of the page width. A label/value block such as
+# "Ref No : ..." covers far less, which is how an address block is told apart
+# from a data table once OCR has given both the same two-column shape.
+_MIN_TABLE_WIDTH_RATIO = 0.5
+# NOTE: rows of one table sit about one glyph-height apart. A bigger blank band
+# means the table ended and another one starts below (measured on a two-table
+# lab report: rows ~1.2x apart, the gap between tables ~3.5x).
+_TABLE_GAP_FACTOR = 2.0
 
 
 def _clean_cell(value) -> str:
@@ -145,15 +153,44 @@ def _first_table(page, body_size: float | None = None):
     return None
 
 
-def _rebuild_from_ocr_lines(lines: list) -> list[list[str]] | None:
-    """Rebuild a table from OCR lines, ignoring letterhead bands.
+def _row_height(band: list) -> float:
+    """Median glyph height of one row band."""
+    heights = sorted(line.box[3] - line.box[1] for line in band)
+    return heights[len(heights) // 2]
 
-    NOTE: OCR of a ruled table yields one line per cell, so the cells get their
-    own boxes and a real grid can be recovered. A letterhead instead yields a
-    few wide lines whose left edges match nothing below them. Grouping by row
-    bands first, then keeping only consecutive bands that share a column layout,
-    drops the letterhead and keeps the table - something pdfplumber cannot do on
-    a text layer, because that layer has no cell geometry at all.
+
+def _row_gap(upper: list, lower: list) -> float:
+    """Vertical white space between two consecutive row bands."""
+    upper_bottom = max(line.box[3] for line in upper)
+    lower_top = min(line.box[1] for line in lower)
+    return max(0.0, lower_top - upper_bottom)
+
+
+def _rows_to_table(blocks: list[list]) -> list[list[str]]:
+    """Turn consecutive row bands into a rectangular table of strings."""
+    columns = sorted(block.box[0] for block in blocks[0])
+    table: list[list[str]] = []
+    for band in blocks:
+        row = [""] * len(columns)
+        for line in sorted(band, key=lambda item: item.box[0]):
+            # place each cell under the column its left edge belongs to
+            index = min(
+                range(len(columns)),
+                key=lambda i: abs(columns[i] - line.box[0]),
+            )
+            row[index] = (row[index] + " " + line.text).strip()
+        table.append(row)
+    return _clean_table(table)
+
+
+def _rebuild_tables_from_ocr_lines(lines: list) -> list[list[list[str]]]:
+    """Rebuild EVERY table on a page from OCR lines, oldest first.
+
+    NOTE: one page often carries two stacked tables (the Decanter report has a
+    per-sample block and a second one below it). Keeping only the longest run of
+    rows exported the first table and silently dropped the second, which is what
+    "OCR did not recognise all tables" looked like to the user. Each run of rows
+    sharing a column layout now becomes its own sheet.
     """
     bands: list[list] = []
     for line in sorted(lines, key=lambda item: item.box[1]):
@@ -167,9 +204,6 @@ def _rebuild_from_ocr_lines(lines: list) -> list[list[str]] | None:
         else:
             bands.append([line])
 
-    if len(bands) < _MIN_TABLE_ROWS:
-        return None
-
     # column starts of one band: the x of each of its cells, left to right
     def starts(band: list) -> list[float]:
         return sorted(line.box[0] for line in band)
@@ -181,8 +215,7 @@ def _rebuild_from_ocr_lines(lines: list) -> list[list[str]] | None:
 
     # NOTE: only multi-cell rows can form a table. A letterhead line is a single
     # run of text (or, when OCR splits it, a stray one-letter cell plus the
-    # rest), so dropping single-cell bands first stops the header from forming
-    # its own long "run" that could outvote the real table below.
+    # rest), so single-cell and prose bands are dropped before grouping.
     def is_row(band: list) -> bool:
         cells = sorted(band, key=lambda item: item.box[0])
         if len(cells) < _MIN_TABLE_COLUMNS:
@@ -190,37 +223,71 @@ def _rebuild_from_ocr_lines(lines: list) -> list[list[str]] | None:
         return len(cells[0].text.strip()) > 1
 
     rows = [band for band in bands if is_row(band)]
-    if len(rows) < _MIN_TABLE_ROWS:
-        return None
 
-    best: list[list] = []
-    run: list[list] = []
+    # split the rows into runs that each share one column layout, and that sit
+    # close enough vertically to belong to the same table
+    groups: list[list[list]] = []
+    current: list[list] = []
     for band in rows:
-        if run and same_layout(starts(run[-1]), starts(band)):
-            run.append(band)
+        if current and same_layout(starts(current[-1]), starts(band)):
+            # NOTE: stacked tables on one page often share a column layout, so
+            # layout alone merged them into one sheet. A visible horizontal gap
+            # between rows marks where one table ends and the next begins.
+            if _row_gap(current[-1], band) > _TABLE_GAP_FACTOR * _row_height(current[-1]):
+                groups.append(current)
+                current = [band]
+                continue
+            current.append(band)
         else:
-            run = [band]
-        if len(run) > len(best):
-            best = list(run)
+            if current:
+                groups.append(current)
+            current = [band]
+    if current:
+        groups.append(current)
 
-    if len(best) < _MIN_TABLE_ROWS:
-        return None
-    columns = starts(best[0])
-    if len(columns) < _MIN_TABLE_COLUMNS:
-        return None
+    # NOTE: an address block ("Ref No: ...", "From: ...") also has two cells and
+    # two rows, so structure alone cannot tell it from a table. What it lacks is
+    # WIDTH: a label/value pair ends a third of the way across the page, while a
+    # real table spreads over most of it. Requiring the widest row to reach half
+    # the page keeps the data tables and drops the letterhead block.
+    page_width = max((line.box[2] for line in lines), default=0.0)
 
-    table: list[list[str]] = []
-    for band in best:
-        row = [""] * len(columns)
-        for line in sorted(band, key=lambda item: item.box[0]):
-            # place each cell under the column its left edge belongs to
-            index = min(
-                range(len(columns)),
-                key=lambda i: abs(columns[i] - line.box[0]),
-            )
-            row[index] = (row[index] + " " + line.text).strip()
-        table.append(row)
-    return _clean_table(table)
+    def wide_enough(group: list[list]) -> bool:
+        if not page_width:
+            return True
+        right = max(line.box[2] for band in group for line in band)
+        left = min(line.box[0] for band in group for line in band)
+        return (right - left) >= page_width * _MIN_TABLE_WIDTH_RATIO
+
+    tables: list[list[list[str]]] = []
+    # NOTE: a header line is sometimes split by OCR into its own band, because
+    # its wording sits a little higher than the data rows. It is held here and
+    # prepended to the next group, but only when the column count matches, so an
+    # unrelated heading cannot hijack a table below it.
+    pending: list[list] = []
+    for group in groups:
+        if len(group) < _MIN_TABLE_ROWS:
+            pending = group
+            continue
+        if not wide_enough(group):
+            # a narrow label/value block: an address or letterhead, not a table
+            pending = []
+            continue
+        blocks = group
+        if pending and len(pending[0]) == len(group[0]):
+            blocks = [*pending, *group]
+        pending = []
+        table = _rows_to_table(blocks)
+        if len(table) >= _MIN_TABLE_ROWS:
+            tables.append(table)
+    return tables
+
+
+def _rebuild_from_ocr_lines(lines: list) -> list[list[str]] | None:
+    """First table only (kept for callers that expect a single result)."""
+    tables = _rebuild_tables_from_ocr_lines(lines)
+    return tables[0] if tables else None
+
 
 
 def pdf_to_xlsx(
@@ -252,7 +319,11 @@ def pdf_to_xlsx(
                     tables.append((page_number, found_on_page, clean))
                 if found_on_page:
                     continue
-                fallback = None
+                # NOTE: a scanned page is rebuilt from the OCR boxes, and EVERY
+                # table found there gets its own sheet. Taking only the first
+                # one silently dropped the lower table on reports that stack two
+                # blocks, which read as "OCR missed the tables".
+                rebuilt: list[list[list[str]]] = []
                 if ocr_pages:
                     page_lines = [
                         line
@@ -260,9 +331,12 @@ def pdf_to_xlsx(
                         if ocr_page.number == page_number
                         for line in ocr_page.lines
                     ]
-                    fallback = _rebuild_from_ocr_lines(page_lines)
-                if fallback is None:
-                    fallback = _first_table(page, body_size)
+                    rebuilt = _rebuild_tables_from_ocr_lines(page_lines)
+                if rebuilt:
+                    for index, table in enumerate(rebuilt, start=1):
+                        tables.append((page_number, index, table))
+                    continue
+                fallback = _first_table(page, body_size)
                 if fallback:
                     tables.append((page_number, 1, fallback))
     except ConversionError:

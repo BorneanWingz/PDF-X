@@ -146,6 +146,91 @@ class TestScannedPdfOcrsFirst:
         assert all(not worksheet._images for worksheet in workbook.worksheets)
 
 
+class TestMultipleTables:
+    """A scanned page with several tables must export all of them."""
+
+    def test_every_table_reaches_its_own_sheet(
+        self, scanned_two_tables_pdf: Path, tmp_path: Path
+    ) -> None:
+        from openpyxl import load_workbook
+
+        outputs = convert(
+            scanned_two_tables_pdf, "xlsx", out_dir=tmp_path / "xlsx", ocr_dpi=200
+        )
+        workbook = load_workbook(outputs[0])
+        assert len(workbook.worksheets) == 2, "both tables should get a sheet"
+
+        first = [
+            [cell for cell in row if cell is not None]
+            for row in workbook.worksheets[0].iter_rows(values_only=True)
+        ]
+        second = [
+            [cell for cell in row if cell is not None]
+            for row in workbook.worksheets[1].iter_rows(values_only=True)
+        ]
+
+        # each table keeps its own header row
+        assert first[0][0] == "Sample"
+        assert "Moisture" in first[0]
+        assert second[0][0] == "Sample"
+        assert "Potassium" in second[0]
+
+        # and its data rows
+        flat_first = " ".join(str(v) for row in first for v in row)
+        flat_second = " ".join(str(v) for row in second for v in row)
+        assert "FWR1" in flat_first and "73.30" in flat_first
+        assert "AK4R1" in flat_second and "32.22" in flat_second
+
+    def test_header_row_is_not_dropped(
+        self, scanned_two_tables_pdf: Path, tmp_path: Path
+    ) -> None:
+        # regression: a header OCR groups as its own band used to be discarded
+        from openpyxl import load_workbook
+
+        outputs = convert(
+            scanned_two_tables_pdf, "xlsx", out_dir=tmp_path / "xlsx", ocr_dpi=200
+        )
+        workbook = load_workbook(outputs[0])
+        for worksheet in workbook.worksheets:
+            rows = [
+                row for row in worksheet.iter_rows(values_only=True)
+                if any(value is not None for value in row)
+            ]
+            assert len(rows) >= 3, "header + at least two data rows"
+            assert "Sample" in rows[0], "header must be the first row"
+
+    def test_address_block_is_not_exported_as_a_table(self, tmp_path: Path) -> None:
+        # a two-column "Ref No : ..." block is narrow; it must not become a sheet
+        from pdftoolbox.engines import pdf_tables
+
+        class FakeLine:
+            def __init__(self, text: str, box: tuple[float, float, float, float]):
+                self.text = text
+                self.box = box
+
+        lines = [
+            # page frame reference, so the width ratio has a denominator
+            FakeLine("", (0.0, 0.0, 2000.0, 10.0)),
+            # narrow address block
+            FakeLine("Ref No", (200.0, 100.0, 300.0, 130.0)),
+            FakeLine(":02/LAB/2026", (420.0, 100.0, 640.0, 130.0)),
+            FakeLine("From", (200.0, 160.0, 290.0, 190.0)),
+            FakeLine(":SOP Laboratory", (420.0, 160.0, 830.0, 190.0)),
+            # real table, spanning the page
+            FakeLine("Sample", (200.0, 400.0, 420.0, 430.0)),
+            FakeLine("Moisture", (700.0, 400.0, 900.0, 430.0)),
+            FakeLine("N", (1500.0, 400.0, 1600.0, 430.0)),
+            FakeLine("FWR1", (200.0, 460.0, 400.0, 490.0)),
+            FakeLine("73.30", (700.0, 460.0, 900.0, 490.0)),
+            FakeLine("0.64", (1500.0, 460.0, 1600.0, 490.0)),
+        ]
+        tables = pdf_tables._rebuild_tables_from_ocr_lines(lines)
+        assert len(tables) == 1, "only the wide table should survive"
+        flat = " ".join(cell for row in tables[0] for cell in row)
+        assert "Sample" in flat
+        assert "Ref No" not in flat
+
+
 class TestScanWithImageHeader:
     """An image/logo header must not hijack the table, and must not crash."""
 

@@ -183,6 +183,46 @@ def scanned_letterhead_only_pdf(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def scanned_two_tables_pdf(tmp_path: Path) -> Path:
+    """Image-only page stacking TWO tables, each with its own header row.
+
+    Regression: only the first (longest) table used to be exported, and a header
+    row that OCR split into its own band was dropped, so a lab report appeared to
+    have "lost" most of its tables and every column title.
+    """
+    image = Image.new("RGB", (1240, 1754), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        mid = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 26)
+    except OSError:
+        mid = ImageFont.load_default()
+
+    def table(top: int, header: list[str], rows: list[list[str]]) -> int:
+        col_w, row_h, left = 150, 55, 80
+        for r, row in enumerate([header, *rows]):
+            for c, cell in enumerate(row):
+                x = left + c * col_w
+                y = top + r * row_h
+                draw.rectangle([x, y, x + col_w, y + row_h], outline="black", width=2)
+                draw.text((x + 8, y + 14), cell, fill="black", font=mid)
+        return top + (len(rows) + 1) * row_h
+
+    bottom = table(
+        180,
+        ["Sample", "Moisture", "N"],
+        [["FWR1", "73.30", "0.64"], ["FWR2", "70.86", "0.61"]],
+    )
+    table(
+        bottom + 80,
+        ["Sample", "Potassium", "Carbon"],
+        [["AK4R1", "0.32", "32.22"], ["AK4R2", "0.47", "28.24"]],
+    )
+    path = tmp_path / "two_tables.pdf"
+    image.save(path, "PDF", resolution=150)
+    return path
+
+
+@pytest.fixture
 def markdown_file(tmp_path: Path) -> Path:
     path = tmp_path / "notes.md"
     path.write_text(
