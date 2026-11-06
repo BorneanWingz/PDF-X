@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, plugins
+from . import __author__, __version__, plugins
 from .convert import (
     convert,
     convert_many,
@@ -43,13 +43,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pages", help="page selection, e.g. 1-3,5 (PDF only)")
     parser.add_argument("--gui", action="store_true", help="open the graphical interface")
     parser.add_argument("--list-targets", action="store_true", help="show targets for the inputs")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="with --list-targets, also show the label the GUI uses",
+    )
     parser.add_argument("--doctor", action="store_true", help="check engines and plugins")
-    parser.add_argument("--version", action="version", version=f"PDF Toolbox {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"PDF-X {__version__} - {__author__}",
+    )
     return parser
 
 
 def _cmd_doctor() -> int:
-    print(f"PDF Toolbox {__version__}")
+    print(f"PDF-X {__version__}")
+    print(f"author:  {__author__}")
     print(f"config:  {config_path()}")
     print(f"plugins: {plugins_dir()}")
     print()
@@ -105,7 +115,7 @@ def _cmd_doctor() -> int:
     return 0
 
 
-def _cmd_list_targets(files: list[Path]) -> int:
+def _cmd_list_targets(files: list[Path], show_labels: bool = False) -> int:
     # NOTE: merge appears in the listing only when the selection has 2+ PDFs
     pdf_count = sum(1 for path in files if path.suffix.lower() == ".pdf")
     for src in files:
@@ -117,7 +127,10 @@ def _cmd_list_targets(files: list[Path]) -> int:
         for option in options:
             state = "ok" if option.available else "unavailable"
             note = f"  [{option.note}]" if option.note else ""
-            print(f"  {option.key:<16} {state}{note}")
+            # NOTE: the label is what the GUI dropdown shows, so --verbose makes
+            # it checkable from a build without opening the window
+            label = f"  \"{option.label}\"" if show_labels else ""
+            print(f"  {option.key:<16} {state}{label}{note}")
     return 0
 
 
@@ -205,7 +218,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args.files:
             print("error: --list-targets needs input files", file=sys.stderr)
             return 2
-        return _cmd_list_targets([path.resolve() for path in args.files])
+        return _cmd_list_targets(
+            [path.resolve() for path in args.files], show_labels=args.verbose
+        )
 
     try:
         return _cmd_convert(args)

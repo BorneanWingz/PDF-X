@@ -19,6 +19,9 @@ DEFAULTS: dict[str, Any] = {
     # same_folder: when True the GUI ignores out_dir and writes beside each
     # input file (convert() interprets out_dir=None that way)
     "same_folder": False,
+    # last_dir: folder of the most recently imported file, so the file
+    # dialogs reopen where the user last worked instead of at some default
+    "last_dir": "",
     "promo": {
         "enabled": True,
         "url": "https://example.invalid/pdf-toolbox/promo.json",

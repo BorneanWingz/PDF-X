@@ -21,6 +21,38 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def bundle_dir() -> Path:
+    """Where bundled read-only data sits.
+
+    NOTE: PyInstaller unpacks ``datas`` to a temp dir (``sys._MEIPASS``) for a
+    onefile build, and to ``_internal`` beside the exe for a onedir build. The
+    icon lives there, not in the writable app folder, so it needs its own
+    resolver rather than app_dir().
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    frozen_dir = getattr(sys, "frozen", False)
+    if frozen_dir:
+        return app_dir() / "_internal"
+    return app_dir()
+
+
+def icon_path(name: str = "pdf-x.ico") -> Path | None:
+    """Locate the app icon, whether bundled, beside the exe, or in the repo."""
+    candidates = [
+        bundle_dir() / "assets" / name,
+        # a onedir build also keeps datas under _internal, so cover the flat case
+        bundle_dir() / name,
+        app_dir() / "assets" / name,
+        app_dir() / name,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def config_path() -> Path:
     return app_dir() / "config.json"
 

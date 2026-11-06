@@ -29,7 +29,7 @@ corporate IT environment, with a future path to an Android build.
 | Text / Markdown to PDF | ReportLab | BSD |
 | OCR (offline) | RapidOCR ONNX models | Apache-2.0 |
 | Searchable PDF writer | ReportLab + pypdf | BSD |
-| Office to PDF | LibreOffice (external, user-provided) | MPL-2.0 |
+| Office to PDF | LibreOffice (bundled in engines\) | MPL-2.0 |
 | PDF to DOCX (optional) | pdf2docx (PyMuPDF) in plugins/ | AGPL-3.0 |
 
 ## Milestones

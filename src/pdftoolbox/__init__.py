@@ -1,3 +1,5 @@
-"""PDF Toolbox: portable offline PDF conversion and OCR for internal teams."""
+"""PDF-X: portable offline PDF conversion and OCR for internal teams."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
+__author__ = "Dr. Sii Longwin"
+

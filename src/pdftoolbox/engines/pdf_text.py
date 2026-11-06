@@ -31,6 +31,17 @@ def extract_pages(src: Path) -> list[str]:
     return pages
 
 
+def has_text_layer(src: Path, min_chars: int = 20) -> bool:
+    """True when the PDF already carries a text layer (i.e. is searchable).
+
+    NOTE: a pure scan makes pypdf return an empty string for every page, so
+    the total stripped length across the document is the signal. The small
+    threshold tolerates documents that only hold page numbers while still
+    rejecting scans, whose extraction is empty or pure noise.
+    """
+    return sum(len(text.strip()) for text in extract_pages(src)) >= min_chars
+
+
 def pdf_to_text(src: Path, out_path: Path) -> Path:
     pages = extract_pages(src)
     chunks = []

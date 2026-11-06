@@ -123,6 +123,30 @@ class TestToPdf:
             convert(image_file, "png")
 
 
+class TestDefaultOutputLocation:
+    """No output folder given: results land beside the input, no subfolder."""
+
+    def test_pdf_conversion_writes_beside_input(self, text_pdf: Path) -> None:
+        before = {path.name for path in text_pdf.parent.iterdir()}
+        convert(text_pdf, "txt")
+        new = {path.name for path in text_pdf.parent.iterdir()} - before
+        # the file itself, and nothing else - especially no "<name>_output" dir
+        assert new == {"sample.txt"}
+        assert not (text_pdf.parent / f"{text_pdf.stem}_output").exists()
+
+    def test_to_pdf_conversion_writes_beside_input(self, image_file: Path) -> None:
+        before = {path.name for path in image_file.parent.iterdir()}
+        convert(image_file, "pdf")
+        new = {path.name for path in image_file.parent.iterdir()} - before
+        assert new == {"picture.pdf"}
+        assert not (image_file.parent / f"{image_file.stem}_output").exists()
+
+    def test_explicit_folder_is_still_honoured(self, text_pdf: Path, tmp_path: Path) -> None:
+        out = tmp_path / "chosen"
+        outputs = convert(text_pdf, "txt", out_dir=out)
+        assert outputs[0].parent == out
+
+
 class TestErrors:
     def test_missing_input(self, tmp_path: Path) -> None:
         with pytest.raises(ConversionError, match="not found"):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,12 @@ from .engines import ocr as ocr_engine
 PDF_TARGETS = ["png", "jpg", "tif", "txt", "html", "xlsx", "pptx", "searchable-pdf", "docx"]
 TO_PDF_IMAGE_TARGET = "pdf"
 MERGE_TARGET = "merge"
+# Targets whose engines read the PDF text layer instead of rendering the page
+# as a picture. A scanned input is OCR'd first so these engines have something
+# to read - see _convert_from_pdf().
+# NOTE: png/jpg/tif/searchable-pdf are excluded on purpose: they either render
+# the page pixels or already run OCR themselves.
+OCR_FIRST_TARGETS = {"txt", "html", "xlsx", "pptx", "docx"}
 _ALIASES = {
     "jpeg": "jpg",
     "tiff": "tif",
@@ -83,17 +90,22 @@ def _plugin_targets() -> dict[str, plugins.PluginInfo]:
     return mapping
 
 
-def _accepts_pages(convert_fn) -> bool:
-    """True when a plugin's convert() declares a ``pages`` parameter.
+def _plugin_kwargs(convert_fn, pages: list[int] | None, ocr_layer: bool) -> dict:
+    """Keyword arguments a plugin's ``convert()`` understands.
 
-    NOTE: page selection joined the plugin contract later, so older plugins
-    with ``convert(src, out_dir)`` are detected here and keep working.
+    NOTE: page selection and the OCR-layer flag joined the plugin contract
+    later, so older plugins declaring ``convert(src, out_dir)`` keep working.
     """
     try:
-        signature = inspect.signature(convert_fn)
+        parameters = inspect.signature(convert_fn).parameters
     except (TypeError, ValueError):
-        return False
-    return "pages" in signature.parameters
+        return {}
+    kwargs: dict = {}
+    if pages and "pages" in parameters:
+        kwargs["pages"] = pages
+    if ocr_layer and "ocr_layer" in parameters:
+        kwargs["ocr_layer"] = True
+    return kwargs
 
 
 def list_targets(src: Path, pdf_inputs: int = 0) -> list[TargetOption]:
@@ -121,13 +133,13 @@ def list_targets(src: Path, pdf_inputs: int = 0) -> list[TargetOption]:
             if info.hint:
                 note += " " + info.hint
             options.append(
-                TargetOption("docx", "DOCX (plugin)", info.available, note.strip())
+                TargetOption("docx", "DOCX", info.available, note.strip())
             )
         else:
             options.append(
                 TargetOption(
                     "docx",
-                    "DOCX (plugin)",
+                    "DOCX",
                     False,
                     "plugin not installed (see plugins/README.md)",
                 )
@@ -207,6 +219,32 @@ def convert(
     return _convert_to_pdf(src, out_dir)
 
 
+def _searchable_copy(
+    src: Path,
+    scratch: Path,
+    ocr_dpi: int,
+    pages: list[int] | None,
+    on_progress,
+) -> tuple[Path, list]:
+    """OCR ``src`` into a searchable PDF inside ``scratch``.
+
+    Returns ``(staged_pdf, ocr_pages)``.
+
+    NOTE: the copy is a throwaway: it only gives the text-reading engines a
+    layer to work with, and it is deleted with its temp folder as soon as the
+    conversion finishes - never written next to the user's files. The OCR pages
+    come back too because the spreadsheet writer rebuilds scanned tables from
+    those boxes (the text layer alone has no cell geometry).
+    """
+    ocr_pages = ocr_engine.ocr_pdf(
+        src, dpi=ocr_dpi, pages=pages, on_progress=on_progress
+    )
+    # NOTE: keep the original stem so every output name stays identical to the
+    # no-OCR path (a "scanned_searchable.txt" would surprise the user)
+    staged = scratch / f"{src.stem}.pdf"
+    return searchable_pdf.make_searchable_pdf(src, staged, ocr_pages, ocr_dpi), ocr_pages
+
+
 def _convert_from_pdf(
     src: Path,
     key: str,
@@ -216,10 +254,48 @@ def _convert_from_pdf(
     pages: list[int] | None,
     on_progress,
 ) -> list[Path]:
-    # NOTE: default output folder sits beside the source file - portable and
-    # predictable (never a temp dir that corporate cleanup tools can wipe)
-    tag_dir = out_dir or src.parent / f"{src.stem}_output"
+    # NOTE: with no output folder the results are written straight beside the
+    # source file - no "<name>_output" subfolder is created, because scattering
+    # one folder per converted file is exactly what users asked to avoid
+    tag_dir = out_dir if out_dir is not None else src.parent
 
+    if key in OCR_FIRST_TARGETS and not pdf_text.has_text_layer(src):
+        # NOTE: a pure scan has no text layer, so txt/html/xlsx/pptx/docx would
+        # come out empty (or fail with "no tables"). OCR runs first and the
+        # searchable copy stands in for the original.
+        with tempfile.TemporaryDirectory(prefix="pdftoolbox-ocr-") as scratch:
+            staged, ocr_pages = _searchable_copy(
+                src, Path(scratch), ocr_dpi, pages, on_progress
+            )
+            # NOTE: the copy already holds ONLY the selected pages, so the page
+            # filter must not be applied to it a second time (it would be out
+            # of range as soon as a subset was requested)
+            return _dispatch_from_pdf(
+                staged,
+                key,
+                tag_dir,
+                dpi,
+                ocr_dpi,
+                None,
+                on_progress,
+                ocr_layer=True,
+                ocr_pages=ocr_pages,
+            )
+
+    return _dispatch_from_pdf(src, key, tag_dir, dpi, ocr_dpi, pages, on_progress)
+
+
+def _dispatch_from_pdf(
+    src: Path,
+    key: str,
+    tag_dir: Path,
+    dpi: int,
+    ocr_dpi: int,
+    pages: list[int] | None,
+    on_progress,
+    ocr_layer: bool = False,
+    ocr_pages: list | None = None,
+) -> list[Path]:
     if key in {"png", "jpg", "tif"}:
         return pdf_render.pdf_to_images(src, tag_dir, fmt=key, dpi=dpi, pages=pages)
 
@@ -230,7 +306,9 @@ def _convert_from_pdf(
         return [pdf_text.pdf_to_html(src, tag_dir / f"{src.stem}.html")]
 
     if key == "xlsx":
-        path, _ = pdf_tables.pdf_to_xlsx(src, tag_dir / f"{src.stem}.xlsx")
+        path, _ = pdf_tables.pdf_to_xlsx(
+            src, tag_dir / f"{src.stem}.xlsx", ocr_pages=ocr_pages
+        )
         return [path]
 
     if key == "pptx":
@@ -257,16 +335,17 @@ def _convert_from_pdf(
             raise EngineUnavailable(
                 f"plugin '{plugin_info.name}' is unavailable: {detail}"
             )
-        if pages and _accepts_pages(plugin_info.convert):
-            return [plugin_info.convert(src, tag_dir, pages=pages)]
-        return [plugin_info.convert(src, tag_dir)]
+        kwargs = _plugin_kwargs(plugin_info.convert, pages, ocr_layer)
+        return [plugin_info.convert(src, tag_dir, **kwargs)]
 
     raise ConversionError(f"unsupported target for PDF input: {key}")
 
 
 def _convert_to_pdf(src: Path, out_dir: Path | None) -> list[Path]:
     suffix = src.suffix.lower()
-    tag_dir = out_dir or src.parent / f"{src.stem}_output"
+    # NOTE: same rule as _convert_from_pdf - no "<name>_output" subfolder, the
+    # result simply lands beside the input
+    tag_dir = out_dir if out_dir is not None else src.parent
     tag_dir.mkdir(parents=True, exist_ok=True)
 
     if images_pdf.is_image(src):
@@ -295,7 +374,10 @@ def convert_many(
 ) -> list[tuple[Path, "list[Path] | str"]]:
     """Convert several files; returns (source, outputs-or-error) pairs."""
     # NOTE: per-file errors become strings instead of exceptions - one bad
-    # file must not abort a whole batch (the GUI renders them as FAILED lines)
+    # file must not abort a whole batch (the GUI renders them as FAILED lines).
+    # The catch is deliberately Exception-wide: a library bug such as openpyxl's
+    # IllegalCharacterError, raised while writing one spreadsheet, previously
+    # escaped here and killed every remaining file in the selection.
     results: list[tuple[Path, list[Path] | str]] = []
     for src in sources:
         try:
@@ -303,5 +385,7 @@ def convert_many(
             results.append((src, outputs))
         except (ConversionError, EngineUnavailable, ValueError) as exc:
             results.append((src, str(exc)))
+        except Exception as exc:  # noqa: BLE001 - never lose the rest of the batch
+            results.append((src, f"{type(exc).__name__}: {exc}"))
     return results
 

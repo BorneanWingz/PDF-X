@@ -27,6 +27,11 @@ def convert(src: "Path", out_dir: "Path") -> "Path":
 - Optional page selection: declare `def convert(src, out_dir, pages=None)`
   and the app passes a list of 1-based page numbers when the user asks
   for one. Plugins with the older signature keep working unchanged.
+- Optional OCR layer: declare
+  `def convert(src, out_dir, pages=None, ocr_layer=False)` and the app sets
+  `ocr_layer=True` when it OCR'd the source first (a scan with no text layer).
+  The engine then receives a searchable PDF whose text is invisible, which
+  some libraries drop by default.
 - `LICENSE` is informational: keep AGPL plugins separate from permissive
   builds. The build script's `clean` mode excludes everything except this
   README.

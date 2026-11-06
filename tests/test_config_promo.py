@@ -31,6 +31,18 @@ class TestConfig:
         save_config({"same_folder": True}, target)
         assert load_config(target)["same_folder"] is True
 
+    def test_last_dir_default_and_persistence(self, tmp_path: Path) -> None:
+        # NOTE: folder of the last imported file; empty means "no memory yet"
+        assert DEFAULTS["last_dir"] == ""
+        target = tmp_path / "config.json"
+        save_config({"last_dir": "C:\\scans"}, target)
+        assert load_config(target)["last_dir"] == "C:\\scans"
+
+    def test_legacy_config_gets_last_dir_default(self, tmp_path: Path) -> None:
+        target = tmp_path / "config.json"
+        target.write_text(json.dumps({"dpi": 300}), encoding="utf-8")
+        assert load_config(target)["last_dir"] == ""
+
     def test_corrupt_file_returns_defaults(self, tmp_path: Path) -> None:
         target = tmp_path / "config.json"
         target.write_text("{not json", encoding="utf-8")

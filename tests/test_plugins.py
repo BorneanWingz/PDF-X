@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from pdftoolbox import plugins
 from pdftoolbox.paths import plugins_dir
+
+
+_IMAGE_SUFFIXES = (".png", ".jpeg", ".jpg", ".gif", ".bmp", ".tif", ".tiff", ".emf", ".wmf")
+
+
+def _media_entries(docx_path: Path) -> list[str]:
+    """Every image part inside a DOCX package (word/media/*, thumbnail, ...)."""
+    with zipfile.ZipFile(str(docx_path)) as archive:
+        return [
+            name
+            for name in archive.namelist()
+            if name.lower().endswith(_IMAGE_SUFFIXES)
+        ]
+
+
+def _drawing_count(docx_path: Path) -> int:
+    """<w:drawing>/<w:pict> references in the document body."""
+    with zipfile.ZipFile(str(docx_path)) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    return xml.count("<w:drawing>") + xml.count("<w:pict>")
 
 
 @pytest.fixture
@@ -48,6 +69,58 @@ class TestPdf2DocxPlugin:
         text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         assert "Page two content" in text
         assert "Hello PDF Toolbox" not in text
+
+    def test_docx_holds_no_images(self, text_pdf: Path, tmp_path: Path) -> None:
+        # regression: pdf2docx rasterises page furniture into full-page PNGs,
+        # which turns the DOCX into a picture with text on top
+        if not self._plugin_ready():
+            import pytest
+
+            pytest.skip("pdf2docx not installed (uv sync --extra agpl)")
+
+        from pdftoolbox.convert import convert
+
+        outputs = convert(text_pdf, "docx", out_dir=tmp_path / "docx")
+        assert _media_entries(outputs[0]) == []
+        assert _drawing_count(outputs[0]) == 0
+
+    def test_docx_keeps_text_after_image_removal(self, text_pdf: Path, tmp_path: Path) -> None:
+        if not self._plugin_ready():
+            import pytest
+
+            pytest.skip("pdf2docx not installed (uv sync --extra agpl)")
+        from docx import Document
+
+        from pdftoolbox.convert import convert
+
+        outputs = convert(text_pdf, "docx", out_dir=tmp_path / "docx")
+        document = Document(str(outputs[0]))
+        text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        assert "Hello PDF Toolbox" in text
+        assert "Page two content" in text
+
+    def test_docx_package_stays_valid(self, text_pdf: Path, tmp_path: Path) -> None:
+        # a stripped package must still open: no dangling content types or rels
+        if not self._plugin_ready():
+            import pytest
+
+            pytest.skip("pdf2docx not installed (uv sync --extra agpl)")
+        from docx import Document
+
+        from pdftoolbox.convert import convert
+
+        outputs = convert(text_pdf, "docx", out_dir=tmp_path / "docx")
+        assert _media_entries(outputs[0]) == []
+        with zipfile.ZipFile(str(outputs[0])) as archive:
+            assert archive.testzip() is None
+            content_types = archive.read("[Content_Types].xml").decode("utf-8")
+            for name in archive.namelist():
+                if name.endswith(".rels"):
+                    assert "image" not in archive.read(name).decode("utf-8")
+        # no image content-type default may outlive the parts that needed it
+        assert 'Extension="png"' not in content_types
+        assert 'Extension="jpeg"' not in content_types
+        Document(str(outputs[0]))  # must not raise
 
 
 ECHO_PLUGIN = """

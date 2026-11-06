@@ -12,7 +12,8 @@ ROOT = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
 ENTRY_GUI = os.path.join(SPEC_DIR, "entry_gui.py")
 ENTRY_CLI = os.path.join(SPEC_DIR, "entry_cli.py")
 SRC_DIR = os.path.join(ROOT, "src")
-
+# NOTE: multi-resolution icon built from assets/pdf-x.jpeg by scripts/make_icon.py
+ICON = os.path.join(ROOT, "assets", "pdf-x.ico")
 mode = os.environ.get("PDFTOOLBOX_BUILD_MODE", "internal")
 is_internal = mode == "internal"
 
@@ -20,6 +21,9 @@ common_hidden = [
     "pdftoolbox",
     "pdftoolbox.cli",
     "pdftoolbox.gui",
+    # NOTE: the GUI sets the window icon via ImageTk, which is imported lazily
+    # inside _apply_window_icon(), so PyInstaller cannot see it on its own
+    "PIL.ImageTk",
     "rapidocr_onnxruntime",
     "onnxruntime",
     "pypdfium2_raw",
@@ -32,7 +36,10 @@ else:
     hidden_imports = common_hidden
     excludes = ["pdf2docx", "fitz", "pymupdf", "cv2", "docx"]
 
-datas = []
+# NOTE: the icon is ALSO shipped as data. icon= only stamps the exe resource
+# (what Explorer shows); the Tk title bar reads the file at runtime through
+# pdftoolbox.paths.icon_path(), which looks in the bundle first.
+datas = [(ICON, "assets")]
 binaries = []
 
 try:
@@ -82,17 +89,19 @@ exe_gui = EXE(
     a_gui.scripts,
     [],
     exclude_binaries=True,
-    name="PDFToolbox",
+    name="PDF-X",
     console=False,
     disable_windowed_traceback=False,
+    icon=ICON,
 )
 exe_cli = EXE(
     pyz_cli,
     a_cli.scripts,
     [],
     exclude_binaries=True,
-    name="PDFToolboxCLI",
+    name="PDF-X-CLI",
     console=True,
+    icon=ICON,
 )
 
 coll = COLLECT(
@@ -106,5 +115,5 @@ coll = COLLECT(
     # NOTE: UPX stays OFF - packed executables trip corporate antivirus and
     # get colleagues' downloads quarantined (a hard requirement of this tool)
     upx=False,
-    name="PDFToolbox",
+    name="PDF-X",
 )
