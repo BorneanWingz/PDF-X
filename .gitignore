@@ -12,5 +12,8 @@ samples-out/
 # runtime asset folders beside the exe (root-level only, never src packages)
 /engines/
 /models/
+# icon build byproduct (the .ico is the committed asset; the .png is emitted
+# by tooling and referenced nowhere)
+/assets/pdf-x.png
 # reference material only, never shipped or read by the code
 /docs/Offline Portable Monetization - Google Gemini.pdf
