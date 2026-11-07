@@ -73,6 +73,10 @@ def plugin_lib_dir() -> Path:
     return plugins_dir() / "lib"
 
 
-def output_dir_for(src: Path, tag: str) -> Path:
-    """Default output folder next to the source file."""
-    return src.parent / f"{src.stem}_{tag}"
+def output_name_for(src: Path, suffix: str, tag: str = "") -> str:
+    """Name for a converted file: ``<stem>_pdfx[tag]<suffix>``.
+
+    NOTE: mirrors pdftoolbox.convert.output_name(); kept here for helpers that
+    need a result name without importing the conversion facade.
+    """
+    return f"{src.stem}_pdfx{tag}{suffix}"

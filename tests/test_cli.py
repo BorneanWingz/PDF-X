@@ -95,7 +95,7 @@ class TestMergeCommand:
         folder = tmp_path / "out"
         code = main([str(first), str(second), "--to", "merge", "--out", str(folder)])
         assert code == 0
-        assert (folder / "a_merged.pdf").exists()
+        assert (folder / "a_pdfx_merged.pdf").exists()
 
     def test_merge_single_file_fails(self, tmp_path: Path, capsys) -> None:
         from test_merge import _make_pdf

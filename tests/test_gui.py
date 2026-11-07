@@ -92,6 +92,27 @@ def test_processing_log_toggle_opens_and_closes() -> None:
     assert harness.log_button.options["text"] == "\u25b8 Processing Log"
 
 
+def test_merge_list_is_numbered_in_order() -> None:
+    # the number shown IS the page order of the merged result
+    assert App.numbered_names(
+        [Path("a.pdf"), Path("b.docx"), Path("c.png")]
+    ) == ["1. a.pdf", "2. b.docx", "3. c.png"]
+
+
+def test_merge_list_numbering_ignores_extension_case() -> None:
+    assert App.numbered_names([Path("Report.PDF")]) == ["1. Report.PDF"]
+
+
+def test_page_labels_show_position_number_and_rotation() -> None:
+    # position in the new document, source page number, and rotation
+    labels = App.page_labels([3, 1, 2], {1: 90, 3: 180})
+    assert labels == ["1. Page 3 (180\u00b0)", "2. Page 1 (90\u00b0)", "3. Page 2"]
+
+
+def test_page_labels_without_rotation() -> None:
+    assert App.page_labels([1, 2], {}) == ["1. Page 1", "2. Page 2"]
+
+
 def test_coffee_link_opens_donation_page(monkeypatch) -> None:
     opened = []
     monkeypatch.setattr(gui_module.webbrowser, "open", opened.append)

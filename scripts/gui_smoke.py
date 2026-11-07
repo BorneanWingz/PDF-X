@@ -77,14 +77,55 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert str(app.out_entry["state"]) == "disabled", "entry should be disabled"
     assert str(app.browse_button["state"]) == "disabled", "browse should be disabled"
 
-    # merge target must disable the Pages field (whole-document operation)
+    # merge now lives on its own tab: the Convert File target list must no
+    # longer offer it, and the Merge PDF tab carries numbered files
     from pathlib import Path as _Path
 
     fake_pdfs = [_Path("a.pdf"), _Path("b.pdf")]
     app.files = list(fake_pdfs)
     app._refresh_targets()
-    assert app.target_var.get() == "PDF (merge all inputs)", "merge should default first"
-    assert str(app.pages_entry["state"]) == "disabled", "pages disabled for merge"
+    assert "merge" not in app.target_box["values"], "merge moved off Convert File"
+    assert str(app.pages_entry["state"]) == "normal", "pages live for PDF input"
+
+    assert app.notebook.tab(1, "text") == "Merge PDF", "merge tab present"
+    app.merge_files = list(fake_pdfs) + [_Path("notes.docx")]
+    app._refresh_merge_list()
+    assert app.merge_list.get(0, "end") == (
+        "1. a.pdf",
+        "2. b.pdf",
+        "3. notes.docx",
+    ), "merge list is numbered in order"
+    assert App.numbered_names([_Path("x.pdf"), _Path("y.png")]) == [
+        "1. x.pdf",
+        "2. y.png",
+    ], "numbering helper"
+
+    # merge Processing Log starts collapsed and takes no space
+    assert app.merge_log_open is False, "merge log starts collapsed"
+    assert not app.merge_log_frame.winfo_manager(), "no merge log container"
+    assert str(app.merge_log_button["text"]).startswith("\u25b8"), "closed marker"
+    app._toggle_merge_log()
+    root.update_idletasks()
+    assert app.merge_log_open is True and app.merge_log_frame.winfo_manager() == "pack"
+    app._toggle_merge_log()
+    root.update_idletasks()
+    assert app.merge_log_open is False
+    assert not app.merge_log_frame.winfo_manager(), "collapsed log takes no space"
+
+    # Edit PDF tab exists with its three sub-tabs
+    assert app.notebook.tab(2, "text") == "Edit PDF", "edit tab present"
+    assert [app.edit_notebook.tab(i, "text") for i in range(3)] == [
+        "Organize Pages",
+        "Split / Extract",
+        "Watermark / Numbers",
+    ], "edit sub-tabs"
+    assert App.page_labels([3, 1, 2], {1: 90, 3: 180}) == [
+        "1. Page 3 (180\u00b0)",
+        "2. Page 1 (90\u00b0)",
+        "3. Page 2",
+    ], "page label helper"
+
+
 
     # ---------- window icon (title bar / taskbar) ----------
     # NOTE: PyInstaller's icon= only brands the exe; the Tk window needs this
@@ -110,7 +151,9 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert app.advanced_open is True, "opens on click"
     assert app.advanced_frame.winfo_manager() == "grid", "container is shown"
     assert app.dpi_var.get() and app.ocr_dpi_var.get(), "DPI fields live there"
-    assert str(app.pages_entry["state"]) == "disabled", "pages state survives toggle"
+    # opening Advanced must not disturb the Pages field's own state (live for
+    # PDF input, since merge no longer borrows it)
+    assert str(app.pages_entry["state"]) == "normal", "pages state survives toggle"
 
     app._toggle_advanced()
     root.update_idletasks()

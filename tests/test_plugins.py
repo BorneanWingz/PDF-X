@@ -70,9 +70,11 @@ class TestPdf2DocxPlugin:
         assert "Page two content" in text
         assert "Hello PDF Toolbox" not in text
 
-    def test_docx_holds_no_images(self, text_pdf: Path, tmp_path: Path) -> None:
-        # regression: pdf2docx rasterises page furniture into full-page PNGs,
-        # which turns the DOCX into a picture with text on top
+    def test_docx_keeps_no_media_for_text_only_pdf(
+        self, text_pdf: Path, tmp_path: Path
+    ) -> None:
+        # a text-only sample has no picture, so nothing is kept and nothing is
+        # duplicated - this is the baseline the illustration test builds on
         if not self._plugin_ready():
             import pytest
 
@@ -81,6 +83,37 @@ class TestPdf2DocxPlugin:
         from pdftoolbox.convert import convert
 
         outputs = convert(text_pdf, "docx", out_dir=tmp_path / "docx")
+        assert _media_entries(outputs[0]) == []
+        assert _drawing_count(outputs[0]) == 0
+
+    def test_docx_keeps_real_illustrations(
+        self, illustration_pdf: Path, tmp_path: Path
+    ) -> None:
+        # a real picture is content: it must reach the DOCX, while a whole-page
+        # scan raster (not present here) is the only thing stripped
+        if not self._plugin_ready():
+            import pytest
+
+            pytest.skip("pdf2docx not installed (uv sync --extra agpl)")
+        from pdftoolbox.convert import convert
+
+        outputs = convert(illustration_pdf, "docx", out_dir=tmp_path / "docx")
+        media = _media_entries(outputs[0])
+        assert len(media) == 1, f"the illustration should survive, got {media}"
+        assert _drawing_count(outputs[0]) >= 1
+
+    def test_docx_strips_whole_page_scan_raster(
+        self, scanned_pdf: Path, tmp_path: Path
+    ) -> None:
+        # a scan is one page-sized image; keeping it would make the DOCX a
+        # picture of the page with an invisible text layer over it
+        if not self._plugin_ready():
+            import pytest
+
+            pytest.skip("pdf2docx not installed (uv sync --extra agpl)")
+        from pdftoolbox.convert import convert
+
+        outputs = convert(scanned_pdf, "docx", out_dir=tmp_path / "docx", ocr_dpi=200)
         assert _media_entries(outputs[0]) == []
         assert _drawing_count(outputs[0]) == 0
 
@@ -110,14 +143,14 @@ class TestPdf2DocxPlugin:
         from pdftoolbox.convert import convert
 
         outputs = convert(text_pdf, "docx", out_dir=tmp_path / "docx")
-        assert _media_entries(outputs[0]) == []
         with zipfile.ZipFile(str(outputs[0])) as archive:
             assert archive.testzip() is None
             content_types = archive.read("[Content_Types].xml").decode("utf-8")
+            # no image part survives for this text-only sample, so no image
+            # content-type default may outlive the parts that needed it
             for name in archive.namelist():
                 if name.endswith(".rels"):
                     assert "image" not in archive.read(name).decode("utf-8")
-        # no image content-type default may outlive the parts that needed it
         assert 'Extension="png"' not in content_types
         assert 'Extension="jpeg"' not in content_types
         Document(str(outputs[0]))  # must not raise

@@ -301,7 +301,7 @@ class TestScanWithImageHeader:
         # next to the user's files
         out = tmp_path / "txt"
         convert(scanned_pdf, "txt", out_dir=out, ocr_dpi=200)
-        assert [path.name for path in out.iterdir()] == ["scanned.txt"]
+        assert [path.name for path in out.iterdir()] == ["scanned_pdfx.txt"]
 
     def test_page_subset_survives_ocr(
         self, scanned_pdf_pages: Path, tmp_path: Path

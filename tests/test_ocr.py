@@ -54,7 +54,7 @@ class TestSearchablePdf:
     def test_output_contains_text_layer(self, scanned_pdf: Path, tmp_path: Path) -> None:
         outputs = convert(scanned_pdf, "searchable-pdf", out_dir=tmp_path / "ocr", ocr_dpi=200)
         result = outputs[0]
-        assert result.name == "scanned_searchable.pdf"
+        assert result.name == "scanned_pdfx_searchable.pdf"
 
         from pypdf import PdfReader
 

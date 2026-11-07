@@ -223,6 +223,45 @@ def scanned_two_tables_pdf(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def illustration_pdf(tmp_path: Path) -> Path:
+    """PDF with a ruled table AND a small illustration above it.
+
+    An illustration is real content: it must survive into the XLSX (on its own
+    sheet) and the DOCX, unlike a whole-page scan raster.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import Image as RLImage
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet
+
+    logo = tmp_path / "logo.png"
+    image = Image.new("RGB", (300, 180), (30, 90, 200))
+    ImageDraw.Draw(image).rectangle([10, 10, 289, 169], outline=(255, 255, 255), width=4)
+    image.save(logo)
+
+    path = tmp_path / "illustrated.pdf"
+    data = [["Item", "Qty", "Price"], ["Widget", "3", "9.75"], ["Gadget", "1", "24.50"]]
+    table = Table(data, colWidths=[180, 60, 80])
+    table.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ]
+        )
+    )
+    SimpleDocTemplate(str(path), pagesize=A4).build(
+        [
+            Paragraph("Report with an illustration", getSampleStyleSheet()["Title"]),
+            RLImage(str(logo), width=200, height=120),
+            table,
+        ]
+    )
+    return path
+
+
+@pytest.fixture
 def markdown_file(tmp_path: Path) -> Path:
     path = tmp_path / "notes.md"
     path.write_text(

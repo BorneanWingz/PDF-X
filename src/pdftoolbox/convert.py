@@ -17,6 +17,11 @@ from .engines import ocr as ocr_engine
 PDF_TARGETS = ["png", "jpg", "tif", "txt", "html", "xlsx", "pptx", "searchable-pdf", "docx"]
 TO_PDF_IMAGE_TARGET = "pdf"
 MERGE_TARGET = "merge"
+# Suffix appended to every converted file name: "report.pdf" -> "report_pdfx.txt".
+# It marks a file as a conversion RESULT, so an output can never be mistaken for
+# (or silently overwrite) an original that happens to sit in the same folder -
+# "report.md" -> "report.pdf" used to collide with a real report.pdf next door.
+OUTPUT_SUFFIX = "_pdfx"
 # Targets whose engines read the PDF text layer instead of rendering the page
 # as a picture. A scanned input is OCR'd first so these engines have something
 # to read - see _convert_from_pdf().
@@ -53,6 +58,22 @@ def normalize_target(target: str) -> str:
     return _ALIASES.get(key, key)
 
 
+def output_name(src: Path, suffix: str, tag: str = "") -> str:
+    """Name for a converted file: ``<original stem>_pdfx[tag]<suffix>``.
+
+    NOTE: the original stem is kept verbatim - "Report final.pdf" stays
+    "Report final_pdfx.txt" - because users match results back to their input
+    by name. ``tag`` slots a page/kind marker between the two, e.g.
+    "scan_pdfx_page0001.png" or "scan_pdfx_searchable.pdf".
+    """
+    return f"{Path(src).stem}{OUTPUT_SUFFIX}{tag}{suffix}"
+
+
+def output_path(src: Path, folder: Path, suffix: str, tag: str = "") -> Path:
+    """``folder / output_name(src, suffix, tag)`` - one place to build names."""
+    return Path(folder) / output_name(src, suffix, tag)
+
+
 def is_merge_target(target: str) -> bool:
     """True for merge/combine requests (an operation over several PDFs)."""
     return normalize_target(target) == MERGE_TARGET
@@ -66,7 +87,7 @@ def merge_pdfs(
     """Merge the PDF inputs into one file, in the given order.
 
     NOTE: out_path names the exact target file (CLI --out x.pdf) and wins
-    over out_dir; with neither, "<first_stem>_merged.pdf" lands beside the
+    over out_dir; with neither, "<first_stem>_pdfx_merged.pdf" lands beside the
     first input. Non-PDF inputs are ignored - the GUI passes the whole list.
     """
     pdfs = [
@@ -78,8 +99,79 @@ def merge_pdfs(
         raise ConversionError("merging needs at least two PDF files")
     if out_path is None:
         folder = Path(out_dir) if out_dir else pdfs[0].parent
-        out_path = folder / f"{pdfs[0].stem}_merged.pdf"
+        out_path = output_path(pdfs[0], folder, ".pdf", "_merged")
     return pdf_merge.merge_pdf_files(pdfs, Path(out_path))
+
+
+def can_convert_to_pdf(src: Path) -> bool:
+    """True when this app can turn ``src`` into a PDF on its own.
+
+    NOTE: PDFs count as already-PDF. Office documents additionally require the
+    LibreOffice engine, which list_targets() already reports separately, so the
+    check here stays about the FORMAT alone.
+    """
+    suffix = Path(src).suffix.lower()
+    if suffix == ".pdf":
+        return True
+    if images_pdf.is_image(src):
+        return True
+    if suffix in {".md", ".markdown", ".txt"}:
+        return True
+    return office.is_office_document(src)
+
+
+def merge_to_pdf(
+    sources: list[Path],
+    out_path: Path | None = None,
+    out_dir: Path | None = None,
+    dpi: int | None = None,
+    on_progress=None,
+) -> Path:
+    """Convert every input to PDF (unless it already is one) and merge them.
+
+    This is the Merge PDF tab's operation: the input list may hold ANY supported
+    format, and the result is one PDF whose pages follow the list order exactly.
+    A source that is already a PDF is used as-is - re-converting it would risk
+    rasterising a perfectly good vector document.
+
+    NOTE: non-PDF inputs are converted into a temporary folder that is removed
+    once the merge is written, so no ``*_pdfx.pdf`` leftovers appear beside the
+    user's files. ``out_path`` names the exact result; otherwise
+    "<first_stem>_pdfx_merged.pdf" lands beside the first input (or in out_dir).
+    """
+    resolved = [Path(src).resolve() for src in sources]
+    if not resolved:
+        raise ConversionError("nothing to merge: no input files")
+
+    with tempfile.TemporaryDirectory(prefix="pdftoolbox-merge-") as scratch:
+        scratch_dir = Path(scratch)
+        pdf_parts: list[Path] = []
+        for index, src in enumerate(resolved, start=1):
+            if not src.is_file():
+                raise ConversionError(f"input file not found: {src}")
+            if src.suffix.lower() == ".pdf":
+                pdf_parts.append(src)
+            else:
+                if not can_convert_to_pdf(src):
+                    raise ConversionError(
+                        f"cannot merge {src.name}: not a PDF and not a "
+                        f"convertible format"
+                    )
+                # NOTE: convert() alone declines the merge target, so each
+                # non-PDF goes through the ordinary "pdf" conversion first
+                produced = convert(src, TO_PDF_IMAGE_TARGET, scratch_dir, dpi=dpi)
+                pdf_parts.append(produced[0])
+            if on_progress is not None:
+                on_progress(index, len(resolved))
+
+        if len(pdf_parts) < 2:
+            raise ConversionError("merging needs at least two PDF files")
+
+        if out_path is None:
+            folder = Path(out_dir) if out_dir else resolved[0].parent
+            out_path = output_path(resolved[0], folder, ".pdf", "_merged")
+        return pdf_merge.merge_pdf_files(pdf_parts, Path(out_path))
+
 
 
 def _plugin_targets() -> dict[str, plugins.PluginInfo]:
@@ -239,8 +331,9 @@ def _searchable_copy(
     ocr_pages = ocr_engine.ocr_pdf(
         src, dpi=ocr_dpi, pages=pages, on_progress=on_progress
     )
-    # NOTE: keep the original stem so every output name stays identical to the
-    # no-OCR path (a "scanned_searchable.txt" would surprise the user)
+    # NOTE: the staged copy keeps the ORIGINAL stem (no "_pdfx"): the engines
+    # are handed an explicit output name built by output_path(), so tagging the
+    # throwaway copy would only leak a "_pdfx_pdfx" into the real result name.
     staged = scratch / f"{src.stem}.pdf"
     return searchable_pdf.make_searchable_pdf(src, staged, ocr_pages, ocr_dpi), ocr_pages
 
@@ -280,6 +373,8 @@ def _convert_from_pdf(
                 on_progress,
                 ocr_layer=True,
                 ocr_pages=ocr_pages,
+                # the staged copy is throwaway: results keep the user's name
+                name_src=src,
             )
 
     return _dispatch_from_pdf(src, key, tag_dir, dpi, ocr_dpi, pages, on_progress)
@@ -295,26 +390,42 @@ def _dispatch_from_pdf(
     on_progress,
     ocr_layer: bool = False,
     ocr_pages: list | None = None,
+    name_src: Path | None = None,
 ) -> list[Path]:
+    # NOTE: name_src is the file the RESULT is named after. It equals src for a
+    # text-layer PDF, but a scan is OCR'd into a temporary copy first and the
+    # outputs must still carry the user's original name, not the temp one.
+    name_src = name_src or src
+
     if key in {"png", "jpg", "tif"}:
-        return pdf_render.pdf_to_images(src, tag_dir, fmt=key, dpi=dpi, pages=pages)
+        return pdf_render.pdf_to_images(
+            src, tag_dir, fmt=key, dpi=dpi, pages=pages, name_prefix=output_name(name_src, "")
+        )
 
     if key == "txt":
-        return [pdf_text.pdf_to_text(src, tag_dir / f"{src.stem}.txt")]
+        return [pdf_text.pdf_to_text(src, output_path(name_src, tag_dir, ".txt"))]
 
     if key == "html":
-        return [pdf_text.pdf_to_html(src, tag_dir / f"{src.stem}.html")]
+        return [pdf_text.pdf_to_html(src, output_path(name_src, tag_dir, ".html"))]
 
     if key == "xlsx":
+        # NOTE: dpi only affects the illustration sheets; the table cells are
+        # text and keep their own resolution. The image engine uses the same
+        # value as the page renders so a picture is cropped as sharply as the
+        # PNG/JPG targets would draw it.
         path, _ = pdf_tables.pdf_to_xlsx(
-            src, tag_dir / f"{src.stem}.xlsx", ocr_pages=ocr_pages
+            src, output_path(name_src, tag_dir, ".xlsx"), ocr_pages=ocr_pages,
+            dpi=dpi,
         )
         return [path]
 
     if key == "pptx":
         return [
             pdf_pptx.pdf_to_pptx(
-                src, tag_dir / f"{src.stem}.pptx", dpi=dpi, pages=pages
+                src,
+                output_path(name_src, tag_dir, ".pptx"),
+                dpi=dpi,
+                pages=pages,
             )
         ]
 
@@ -322,7 +433,7 @@ def _dispatch_from_pdf(
         ocr_pages = ocr_engine.ocr_pdf(
             src, dpi=ocr_dpi, pages=pages, on_progress=on_progress
         )
-        out_path = tag_dir / f"{src.stem}_searchable.pdf"
+        out_path = output_path(name_src, tag_dir, ".pdf", "_searchable")
         return [searchable_pdf.make_searchable_pdf(src, out_path, ocr_pages, ocr_dpi)]
 
     # any target provided by an optional plugin (e.g. docx via pdf2docx).
@@ -336,29 +447,61 @@ def _dispatch_from_pdf(
                 f"plugin '{plugin_info.name}' is unavailable: {detail}"
             )
         kwargs = _plugin_kwargs(plugin_info.convert, pages, ocr_layer)
-        return [plugin_info.convert(src, tag_dir, **kwargs)]
+        if "out_name" in inspect.signature(plugin_info.convert).parameters:
+            # NOTE: the plugin contract gained an explicit output name so a
+            # plugin result is tagged "<stem>_pdfx" like every other output;
+            # plugins predating it still name their own file (see _rename_output)
+            kwargs["out_name"] = output_name(name_src, f".{key}")
+        produced = plugin_info.convert(src, tag_dir, **kwargs)
+        return [_rename_output(Path(produced), tag_dir, output_name(name_src, f".{key}"))]
 
     raise ConversionError(f"unsupported target for PDF input: {key}")
+
+
+def _rename_output(produced: Path, tag_dir: Path, name: str) -> Path:
+    """Make sure a plugin result carries the tagged name.
+
+    NOTE: plugins written against the older ``convert(src, out_dir)`` contract
+    choose their own file name, so the result is renamed after the fact. A
+    plugin that already produced exactly ``name`` is left untouched, and a
+    rename failure is not fatal - the caller would rather show an untagged
+    file than lose a finished conversion.
+    """
+    if produced.name == name:
+        return produced
+    target = Path(tag_dir) / name
+    try:
+        produced.replace(target)
+    except OSError:
+        return produced
+    return target
 
 
 def _convert_to_pdf(src: Path, out_dir: Path | None) -> list[Path]:
     suffix = src.suffix.lower()
     # NOTE: same rule as _convert_from_pdf - no "<name>_output" subfolder, the
-    # result simply lands beside the input
+    # result simply lands beside the input, tagged "<stem>_pdfx"
     tag_dir = out_dir if out_dir is not None else src.parent
     tag_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_path(src, tag_dir, ".pdf")
 
     if images_pdf.is_image(src):
-        return [images_pdf.images_to_pdf([src], tag_dir / f"{src.stem}.pdf")]
+        return [images_pdf.images_to_pdf([src], out_path)]
 
     if suffix in {".md", ".markdown"}:
-        return [markdown_pdf.markdown_to_pdf(src, tag_dir / f"{src.stem}.pdf")]
+        return [markdown_pdf.markdown_to_pdf(src, out_path)]
 
     if suffix == ".txt":
-        return [text_pdf.text_to_pdf(src, tag_dir / f"{src.stem}.pdf")]
+        return [text_pdf.text_to_pdf(src, out_path)]
 
     if office.is_office_document(src):
-        return [office.office_to_pdf(src, tag_dir)]
+        # NOTE: soffice names its own output ("<stem>.pdf") in --outdir, so the
+        # result is tagged afterwards instead of being written twice
+        return [
+            _rename_output(
+                office.office_to_pdf(src, tag_dir), tag_dir, output_name(src, ".pdf")
+            )
+        ]
 
     raise ConversionError(f"cannot convert {src.name} to PDF (unsupported type)")
 

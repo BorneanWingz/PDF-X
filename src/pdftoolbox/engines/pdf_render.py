@@ -33,13 +33,20 @@ def pdf_to_images(
     fmt: str = "png",
     dpi: int = 150,
     pages: list[int] | None = None,
+    name_prefix: str | None = None,
 ) -> list[Path]:
-    """Render every page (or the given 1-based pages) to image files."""
+    """Render every page (or the given 1-based pages) to image files.
+
+    NOTE: name_prefix is the bare output name stem ("report_pdfx"); the page
+    number is appended to it. Without one the source stem is used, keeping this
+    engine usable on its own.
+    """
     fmt = fmt.lower()
     if fmt not in _FORMATS:
         raise ConversionError(f"unsupported image format: {fmt}")
     pil_format, save_kwargs = _FORMATS[fmt]
     ext = "tif" if fmt == "tiff" else fmt
+    prefix = name_prefix if name_prefix is not None else src.stem
 
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = pdfium.PdfDocument(str(src))
@@ -57,7 +64,7 @@ def pdf_to_images(
             # for pages with transparency, so force RGB for JPEG only
             if pil_format == "JPEG":
                 image = image.convert("RGB")
-            out = out_dir / f"{src.stem}_page{i + 1:04d}.{ext}"
+            out = out_dir / f"{prefix}_page{i + 1:04d}.{ext}"
             image.save(out, format=pil_format, **(save_kwargs or {}))
             outputs.append(out)
     finally:

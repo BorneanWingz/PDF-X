@@ -1,13 +1,14 @@
 # PDF-X
 
-**Version 0.1.2**
+**Version 0.1.3**
 
 Portable, offline PDF converter and OCR toolbox for internal team use.
 Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 
 - **GUI**: double-click `PDF-X.exe` (tkinter, no external runtime needed)
-  - **Convert File** tab holds every conversion option; an **About** tab carries
-    the version and author details
+  - **Convert File** tab holds every conversion option; a **Merge PDF** tab
+    combines files into one PDF; an **Edit PDF** tab edits an existing PDF; an
+    **About** tab carries the version and author details
   - "Output in same folder" checkbox: writes results beside each input file and
     disables the Output folder field and Browse button while ticked
   - pressing Convert with neither an output folder nor the checkbox ticked asks
@@ -18,9 +19,25 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   - files can also be dragged onto the file list to add them
   - **Pages** limits the conversion to part of a PDF: leave it blank for every
     page, or give 1-based numbers and ranges such as `1-3,5`. It applies to PDF
-    input only, and merge ignores it.
+    input only.
   - **Advanced Options** holds the Image DPI (PNG/JPG/TIF/PPTX resolution) and
     OCR DPI (scan-reading resolution) knobs and is folded away by default
+- **Merge PDF** tab: combine any supported files into one PDF. Each file is
+  converted to PDF first (unless it already is one), then merged in the order
+  shown. The list is numbered `1.`, `2.`, ... and that order IS the page order of
+  the result; reorder with **Move Up** / **Move Down**, by dragging rows, or by
+  adding files in the order you want. Needs at least two files; the result is
+  `<first file>_pdfx_merged.pdf`.
+- **Edit PDF** tab: open one PDF and edit it, with no upload and no network.
+  - **Organize Pages**: reorder (**Move Up/Down** or drag), rotate 90°/180°, and
+    delete pages. The list is numbered and shows each page's rotation; the saved
+    PDF follows that order.
+  - **Split / Extract**: split every N pages into separate files, or extract a
+    page range (`1-3,5`) into one PDF.
+  - **Watermark / Numbers**: stamp a diagonal watermark, and add page numbers
+    such as `Page 1 of 10` in a choice of corners.
+  - Results are new files named `<name>_pdfx...pdf` (e.g. `_watermark`,
+    `_numbered`, `_part1`) and never overwrite the source.
 - **CLI**: `PDF-X-CLI.exe report.pdf --to png --dpi 200`
   - `--list-targets --verbose` prints each target together with the label the
     GUI shows, which makes a build checkable without opening a window
@@ -28,6 +45,27 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 - **No admin rights, no registry writes, no telemetry**: everything lives beside the executable.
 - **Offline by default**: only the optional promo banner check makes a network call, with a
   2-second timeout and silent failure.
+
+## What's new in 0.1.3
+
+- **New Edit PDF tab.** Open a PDF and reorganise it offline: reorder, rotate
+  and delete pages; split into chunks or extract a range; add a watermark or
+  page numbers. Built on the permissive `pypdf` + `reportlab` stack, so no new
+  dependency and no AGPL. Results are new files (`<name>_pdfx...pdf`) and never
+  overwrite the source.
+- **Merge has its own tab.** Merging is no longer a target buried in the Convert
+  File list — the new **Merge PDF** tab takes any supported file (PDF, image,
+  Word, Excel, PowerPoint, Markdown, text), converts each to PDF, and joins them
+  into one file in the order shown. Files are numbered `1.`, `2.`, ... and can be
+  reordered with **Move Up** / **Move Down** or by dragging a row; that order is
+  the page order of the result. Convert File now offers per-file conversions only.
+- **Every tab's Processing Log starts collapsed**, so an unused log no longer
+  takes up space in Convert File, Merge PDF or Edit PDF.
+- **Illustrations are no longer thrown away.** The DOCX conversion used to strip
+  *every* image to avoid a "picture of the page" — which also deleted real
+  figures, diagrams and logo bands. Now only a whole-page scan raster is removed;
+  illustrations stay inline in the DOCX, and XLSX gains a `<page>_images` sheet
+  per page holding them. The spreadsheet's table sheets are unchanged.
 
 ## What's new in 0.1.2
 
@@ -52,7 +90,9 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   file is reported on its own without stopping the rest.
 - **DOCX and XLSX hold real content, never a picture of the page.** Every image
   part is stripped from the DOCX after conversion (a 10-page sample fell from
-  118 KB to 49 KB with all 30 tables and 170 paragraphs intact).
+  118 KB to 49 KB with all 30 tables and 170 paragraphs intact). *Superseded in
+  0.1.2: only whole-page scan rasters are stripped now, so real illustrations
+  survive — see "What's new in 0.1.2".*
 - **Results are written beside the input.** No `<name>_output` subfolder is
   created any more.
 - **Remembered settings**: the last import folder, the "Output in same folder"
@@ -71,7 +111,8 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 | --- | --- |
 | PDF | PNG, JPG, TIF, TXT, HTML, XLSX (tables), PPTX, DOCX |
 | PDF (scanned) | Searchable PDF (invisible OCR text layer), TXT, HTML, XLSX, PPTX, DOCX |
-| 2+ PDFs | Merged PDF (`--to merge`, "PDF (merge all inputs)") |
+| Any supported file(s) | One merged PDF (GUI **Merge PDF** tab; CLI `--to merge`) |
+| PDF (Edit PDF tab) | Reorganised PDF (reorder/rotate/delete), split parts, extracted range, watermarked, numbered |
 | PNG, JPG, TIF, BMP, WebP | PDF |
 | TXT, MD | PDF |
 | DOC, DOCX, XLS, XLSX, PPT, PPTX, ODT, ODS, ODP, RTF, CSV | PDF (LibreOffice engine, bundled) |
@@ -80,22 +121,50 @@ DOCX conversion comes from the optional `pdf2docx` plugin in `plugins\`. When it
 is not installed the target still appears in the list but is reported as
 unavailable, so the rest of the toolbox keeps working.
 
+Output names: every converted file keeps the original name and gains a `_pdfx`
+marker, so a result can never be confused with an original that sits in the same
+folder.
+
+```
+report.pdf   --to txt     -> report_pdfx.txt
+report.pdf   --to png     -> report_pdfx_page0001.png, report_pdfx_page0002.png, ...
+report.pdf   --to ocr     -> report_pdfx_searchable.pdf
+notes.md     --to pdf     -> notes_pdfx.pdf
+a.pdf + b.pdf --to merge  -> a_pdfx_merged.pdf
+Edit PDF: watermark -> report_pdfx_watermark.pdf
+Edit PDF: numbers   -> report_pdfx_numbered.pdf
+Edit PDF: split     -> report_pdfx_part1.pdf, report_pdfx_part2.pdf, ...
+Edit PDF: extract   -> report_pdfx_extract.pdf
+```
+
 Merge notes: output pages follow the listed input order exactly; the merged
-file is `<first_name>_merged.pdf` beside the first input, and an existing
+file is `<first_name>_pdfx_merged.pdf` beside the first input, and an existing
 file is never overwritten (a ` (1)` suffix is chosen instead).
 
 Scanned input: any conversion that reads the PDF text layer (TXT, HTML, XLSX,
 PPTX, DOCX) runs OCR first when the input has no text layer, so a scan no longer
 produces an empty file. The OCR copy is temporary: only the requested output is
 written to the output folder, and its name matches the non-scanned path
-(`scan.pdf` -> `scan.txt`, not `scan_searchable.txt`).
+(`scan.pdf` -> `scan_pdfx.txt`, not `scan_pdfx_searchable.txt`).
 
 Office output is real content, never a picture of the page: XLSX holds extracted
-table cells and DOCX holds extracted text, tables and paragraphs. pdf2docx
-rasterises decorative page furniture into full-page PNGs, so the DOCX plugin
-strips every image part (including the document thumbnail) after conversion —
-a 10-page sample drops from 118 KB to 49 KB while all 30 tables and 170
-paragraphs survive.
+table cells and DOCX holds extracted text, tables and paragraphs.
+
+Illustrations are kept. A picture in the source is content, so it survives into
+the spreadsheet and the document instead of being dropped:
+
+- **XLSX**: each page's pictures go on their own `<page>_images` sheet (for
+  example `p1_images`), scaled to their original size. Table sheets stay pure
+  text, so a picture never lands on top of a header row.
+- **DOCX**: pictures stay inline where they were. Only a **whole-page raster** (a
+  scan, where the page is one image with an invisible text layer over it) is
+  removed — that is the one case that would turn the document into "a picture of
+  the page". Real figures, logos and bands are far smaller than the page and are
+  left untouched.
+
+Illustration detection skips anything that fills most of the page or overlaps a
+table, so a scan or a page furniture background is never mistaken for a figure.
+An input with no real pictures simply gains no image sheet and no media parts.
 
 Scans with an image/logo header: a letterhead is not a table, but OCR turns it
 into a dense block of short text that pdfplumber reported as the page's table,
@@ -117,7 +186,7 @@ PDF-X\
   PDF-X-CLI.exe         command line
   config.json           created on first run
   plugins\              optional converters (see plugins\README.md)
-  engines\libreoffice\  LibreOffice engine, bundled (~1.5 GB) for Office -> PDF
+  engines\libreoffice\  LibreOffice engine for Office -> PDF (dictionary packs omitted)
   models\               optional OCR models
 ```
 
@@ -125,7 +194,10 @@ The LibreOffice engine is self-contained: `soffice.exe` is resolved from
 `engines\libreoffice\program` first, so Office documents convert with no
 system-wide install, no registry writes and no admin rights. `SOFFICE_PATH`
 overrides it, and a LibreOffice on `PATH` is the fallback. Verify a bundle with
-`PDF-X-CLI.exe --doctor` (the `[engine]` line should read `ok`).
+`PDF-X-CLI.exe --doctor` (the `[engine]` line should read `ok`). Build output
+omits LibreOffice `dict-*` language packs to reduce size; Office-to-PDF still
+works, but LibreOffice spell-checking and hyphenation for those languages are
+not included.
 
 Fetch or refresh the engine with `scripts\download-engines.ps1`; it downloads
 the official MSI and performs an administrative install (`msiexec /a`), which
@@ -151,9 +223,11 @@ uv run python scripts\make_icon.py
 ```
 
 Build output lands in `dist\PDF-X\` (`PDF-X.exe`, `PDF-X-CLI.exe`, plus the
-`_internal` runtime and the `plugins`, `engines` and `models` folders). Note
-that `dist\` and `engines\` are git-ignored: the ~1.5 GB engine is fetched with
-the script above rather than committed.
+`_internal` runtime and the `plugins`, `engines` and `models` folders). The
+build omits LibreOffice's `dict-*` extension folders; other extensions and
+license/readme files are retained. Note that `dist\` and `engines\` are
+git-ignored: the LibreOffice engine is fetched with the script above rather
+than committed.
 
 Close any running `PDF-X.exe` before rebuilding, or the copy step fails with
 `PermissionError: Access is denied`.

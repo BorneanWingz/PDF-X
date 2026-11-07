@@ -65,23 +65,35 @@ if ($Mode -eq "internal" -and (Test-Path "plugins\pdf2docx_plugin.py")) {
 Copy-Item "docs\PLAN.md" (Join-Path $bundle "OM-README.md") -Force -ErrorAction SilentlyContinue
 
 # LibreOffice engine: bundled so Office -> PDF works out of the box.
-# NOTE: ~1.5 GB, so it is copied (not zipped into _internal) and can be skipped
-# with -SkipLibreOffice for a slim build that relies on SOFFICE_PATH instead.
+# Dictionary extensions are omitted to reduce the bundle; they are used for
+# spell-checking and hyphenation, not document-to-PDF conversion.
+# The engine can also be skipped with -SkipLibreOffice, which requires
+# SOFFICE_PATH or LibreOffice on PATH for Office -> PDF.
 $loSource = Join-Path $root "engines\libreoffice"
 $loTarget = Join-Path $bundle "engines\libreoffice"
 if ($SkipLibreOffice) {
     Write-Host "LibreOffice: skipped (-SkipLibreOffice)" -ForegroundColor Yellow
 } elseif (Test-Path (Join-Path $loSource "program\soffice.exe")) {
-    Write-Host "Copying LibreOffice engine (~900 MB, this takes a few minutes)..." -ForegroundColor Cyan
+    $dictionaryDirs = @(
+        Get-ChildItem (Join-Path $loSource "share\extensions") -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "dict-*" } |
+            ForEach-Object { "`"$($_.FullName)`"" }
+    )
+    Write-Host "Copying LibreOffice engine without $($dictionaryDirs.Count) language dictionary packs..." -ForegroundColor Cyan
     # NOTE: robocopy, not Copy-Item: a 19k-file tree over Copy-Item silently
     # truncated the copy part-way through in testing. /MT keeps it quick,
     # and the MSI plus setup logs are excluded - they are installer leftovers,
     # not part of the runtime (the .msi alone is ~360 MB).
-    $robo = Start-Process robocopy.exe -ArgumentList @(
+    $roboArgs = @(
         "`"$loSource`"", "`"$loTarget`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
         "/MT:8", "/R:1", "/W:1",
         "/XF", "LibreOffice.msi", "*.log"
-    ) -Wait -PassThru -NoNewWindow
+    )
+    if ($dictionaryDirs.Count -gt 0) {
+        $roboArgs += "/XD"
+        $roboArgs += $dictionaryDirs
+    }
+    $robo = Start-Process robocopy.exe -ArgumentList $roboArgs -Wait -PassThru -NoNewWindow
     # robocopy: 0-7 are success (bit flags), 8+ means files failed to copy
     if ($robo.ExitCode -ge 8) {
         throw "robocopy failed with exit code $($robo.ExitCode)"

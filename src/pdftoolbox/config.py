@@ -22,6 +22,10 @@ DEFAULTS: dict[str, Any] = {
     # last_dir: folder of the most recently imported file, so the file
     # dialogs reopen where the user last worked instead of at some default
     "last_dir": "",
+    # merge_out_dir: folder chosen on the Merge PDF tab (blank = same folder)
+    "merge_out_dir": "",
+    # edit_out_dir: folder chosen on the Edit PDF tab (blank = beside the PDF)
+    "edit_out_dir": "",
     "promo": {
         "enabled": True,
         "url": "https://example.invalid/pdf-toolbox/promo.json",

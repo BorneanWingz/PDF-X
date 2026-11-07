@@ -12,14 +12,16 @@ outside the page's body type size are ignored (see _body_font_size).
 from __future__ import annotations
 
 import re
-from collections import Counter
 from pathlib import Path
 
 import pdfplumber
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 from . import ConversionError
+from . import pdf_images
 
 # openpyxl refuses any control character inside a cell, and a mistaken read of a
 # logo/letterhead is exactly where such bytes come from. Excel itself stores only
@@ -294,6 +296,7 @@ def pdf_to_xlsx(
     src: Path,
     out_path: Path,
     ocr_pages: list | None = None,
+    dpi: int = 200,
 ) -> tuple[Path, int]:
     """Write every extracted table to its own sheet. Returns (path, table count).
 
@@ -301,6 +304,10 @@ def pdf_to_xlsx(
     source was a scan. A scan's text layer has no cell geometry, so its tables
     are rebuilt from those boxes (see _rebuild_from_ocr_lines) rather than left
     to pdfplumber's heuristics, which read a letterhead as the table.
+
+    Illustrations are a separate concern: every real picture on a page goes onto
+    an extra ``p<n>_images`` sheet, so the cells stay pure table data and a
+    picture never lands on top of a header row.
     """
     tables: list[tuple[int, int, list]] = []
     try:
@@ -360,6 +367,12 @@ def pdf_to_xlsx(
         for cell in sheet[1]:
             cell.font = Font(bold=True)
 
+    # NOTE: illustrations go onto their own sheets so no table cell is moved.
+    # A source without any real picture simply gains no extra sheet.
+    illustrations = pdf_images.page_illustrations(src)
+    if illustrations:
+        _add_illustration_sheets(workbook, src, illustrations, dpi)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         workbook.save(out_path)
@@ -369,3 +382,62 @@ def pdf_to_xlsx(
         # still become a per-file error instead of aborting the whole batch.
         raise ConversionError(f"cannot write spreadsheet: {exc}") from exc
     return out_path, len(tables)
+
+
+# openpyxl anchors an image by its TOP-LEFT pixel; images are laid out in a
+# single column, one blank pixel row apart, and each image is scaled to its
+# original print size (points -> inches) so the sheet shows it as the PDF does.
+_IMAGE_COLUMN_PX = 6
+_IMAGE_ROW_GAP_PX = 8
+# a picture wider than this is scaled down: Excel columns are not the place for a
+# metre-wide scan, and one oversized image would push every later one off-sheet
+_MAX_IMAGE_HEIGHT_PX = 720
+
+
+def _add_illustration_sheets(workbook: Workbook, src: Path, illustrations, dpi: int) -> None:
+    """One ``p<n>_images`` sheet per page that carries a real picture."""
+    for page_number in sorted(illustrations):
+        sheet = workbook.create_sheet(title=f"p{page_number}_images"[:31])
+        sheet["A1"] = f"Page {page_number} illustrations"
+        sheet["A1"].font = Font(bold=True)
+        offset_px = 0
+        for index, illustration in enumerate(illustrations[page_number], start=1):
+            try:
+                image = pdf_images.crop_illustration(src, illustration, dpi=dpi)
+            except Exception:  # noqa: BLE001 - one bad crop must not lose the rest
+                continue
+            offset_px = _place_image(sheet, image, index, offset_px)
+
+
+def _place_image(sheet, image, index: int, offset_px: int) -> int:
+    """Anchor one image on ``sheet`` and return the next free pixel row."""
+    # keep the aspect ratio while capping the on-sheet size
+    width_px, height_px = image.size
+    scale = min(1.0, _MAX_IMAGE_HEIGHT_PX / height_px) if height_px else 1.0
+    target = XLImage(_image_stream(image))
+    target.width = width_px * scale
+    target.height = height_px * scale
+    anchor = f"{get_column_letter(_IMAGE_COLUMN_PX)}{_row_for_offset(sheet, offset_px)}"
+    target.anchor = anchor
+    sheet.add_image(target)
+    sheet.cell(row=_row_for_offset(sheet, offset_px), column=_IMAGE_COLUMN_PX + 1).value = (
+        f"image {index}"
+    )
+    return offset_px + target.height + _IMAGE_ROW_GAP_PX
+
+
+def _row_for_offset(sheet, offset_px: int) -> int:
+    """First sheet row whose implied pixel offset is >= offset_px (row 2 start)."""
+    if offset_px <= 0:
+        return 2
+    return 2 + int(offset_px / 20)  # Excel default row height ~20 px
+
+
+def _image_stream(image):
+    """A seekable buffer openpyxl can read; PIL images are otherwise lazy."""
+    from io import BytesIO
+
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
