@@ -1,6 +1,6 @@
 # PDF-X
 
-**Version 0.1.3**
+**Version 0.1.4**
 
 Portable, offline PDF converter and OCR toolbox for internal team use.
 Build and release notes: [docs/PLAN.md](docs/PLAN.md).
@@ -29,15 +29,24 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   adding files in the order you want. Needs at least two files; the result is
   `<first file>_pdfx_merged.pdf`.
 - **Edit PDF** tab: open one PDF and edit it, with no upload and no network.
-  - **Organize Pages**: reorder (**Move Up/Down** or drag), rotate 90°/180°, and
-    delete pages. The list is numbered and shows each page's rotation; the saved
-    PDF follows that order.
+  - **Organize Pages**: reorder (**Move Up/Down** or drag), rotate 90° left
+    (↺) / right (↻) or 180°, and delete pages. The list is numbered and tags each
+    rotated page (e.g. `[rotated 90° ↻]`); the saved PDF follows that order.
   - **Split / Extract**: split every N pages into separate files, or extract a
     page range (`1-3,5`) into one PDF.
   - **Watermark / Numbers**: stamp a diagonal watermark, and add page numbers
     such as `Page 1 of 10` in a choice of corners.
+  - **Edit Text**: **Add text** a note/label at any position (page, X, Y, size),
+    or **Find and replace** across the document. Both are *overlay* edits — new
+    text is drawn over the page and replace paints a cover box over the old
+    words. The original characters stay in the file's text layer, because
+    rewriting a PDF's existing text streams needs a full content-stream engine,
+    which this permissive stack does not have.
   - Results are new files named `<name>_pdfx...pdf` (e.g. `_watermark`,
-    `_numbered`, `_part1`) and never overwrite the source.
+    `_numbered`, `_text`, `_replaced`, `_part1`) and never overwrite the source.
+    The output folder uses the same controls as the other tabs: a folder field
+    with **Browse** and an **"Output in same folder"** checkbox (on by default)
+    that writes the result beside the PDF.
 - **CLI**: `PDF-X-CLI.exe report.pdf --to png --dpi 200`
   - `--list-targets --verbose` prints each target together with the label the
     GUI shows, which makes a build checkable without opening a window
@@ -46,19 +55,25 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 - **Offline by default**: only the optional promo banner check makes a network call, with a
   2-second timeout and silent failure.
 
-## What's new in 0.1.3
+## What's new in 0.1.4
 
 - **New Edit PDF tab.** Open a PDF and reorganise it offline: reorder, rotate
-  and delete pages; split into chunks or extract a range; add a watermark or
-  page numbers. Built on the permissive `pypdf` + `reportlab` stack, so no new
-  dependency and no AGPL. Results are new files (`<name>_pdfx...pdf`) and never
-  overwrite the source.
+  (90° left ↺ / right ↻, or 180°), and delete pages; split into chunks or extract
+  a range; add a watermark or page numbers; and **edit text** — add new text at
+  any position, or find-and-replace across the document (the old words are
+  covered, not rewritten — see the tab's notes). Rotated pages are tagged in the
+  list (e.g. `[rotated 90° ↻]`). Built on the permissive `pypdf` + `reportlab`
+  stack, so no new dependency and no AGPL. Results are new files
+  (`<name>_pdfx...pdf`) and never overwrite the source.
 - **Merge has its own tab.** Merging is no longer a target buried in the Convert
   File list — the new **Merge PDF** tab takes any supported file (PDF, image,
   Word, Excel, PowerPoint, Markdown, text), converts each to PDF, and joins them
   into one file in the order shown. Files are numbered `1.`, `2.`, ... and can be
   reordered with **Move Up** / **Move Down** or by dragging a row; that order is
   the page order of the result. Convert File now offers per-file conversions only.
+- **Consistent output controls everywhere.** The Merge PDF and Edit PDF tabs use
+  the same "Output folder + Browse + Output in same folder" controls as Convert
+  File.
 - **Every tab's Processing Log starts collapsed**, so an unused log no longer
   takes up space in Convert File, Merge PDF or Edit PDF.
 - **Illustrations are no longer thrown away.** The DOCX conversion used to strip
@@ -112,7 +127,7 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 | PDF | PNG, JPG, TIF, TXT, HTML, XLSX (tables), PPTX, DOCX |
 | PDF (scanned) | Searchable PDF (invisible OCR text layer), TXT, HTML, XLSX, PPTX, DOCX |
 | Any supported file(s) | One merged PDF (GUI **Merge PDF** tab; CLI `--to merge`) |
-| PDF (Edit PDF tab) | Reorganised PDF (reorder/rotate/delete), split parts, extracted range, watermarked, numbered |
+| PDF (Edit PDF tab) | Reorganised PDF (reorder/rotate/delete), split parts, extracted range, watermarked, numbered, added text, find-and-replace |
 | PNG, JPG, TIF, BMP, WebP | PDF |
 | TXT, MD | PDF |
 | DOC, DOCX, XLS, XLSX, PPT, PPTX, ODT, ODS, ODP, RTF, CSV | PDF (LibreOffice engine, bundled) |
@@ -135,6 +150,8 @@ Edit PDF: watermark -> report_pdfx_watermark.pdf
 Edit PDF: numbers   -> report_pdfx_numbered.pdf
 Edit PDF: split     -> report_pdfx_part1.pdf, report_pdfx_part2.pdf, ...
 Edit PDF: extract   -> report_pdfx_extract.pdf
+Edit PDF: add text  -> report_pdfx_text.pdf
+Edit PDF: replace   -> report_pdfx_replaced.pdf
 ```
 
 Merge notes: output pages follow the listed input order exactly; the merged

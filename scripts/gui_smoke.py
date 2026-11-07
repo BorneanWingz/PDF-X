@@ -112,20 +112,45 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert app.merge_log_open is False
     assert not app.merge_log_frame.winfo_manager(), "collapsed log takes no space"
 
-    # Edit PDF tab exists with its three sub-tabs
+    # Edit PDF tab exists with its four sub-tabs
     assert app.notebook.tab(2, "text") == "Edit PDF", "edit tab present"
-    assert [app.edit_notebook.tab(i, "text") for i in range(3)] == [
+    assert [app.edit_notebook.tab(i, "text") for i in range(4)] == [
         "Organize Pages",
         "Split / Extract",
         "Watermark / Numbers",
+        "Edit Text",
     ], "edit sub-tabs"
     assert App.page_labels([3, 1, 2], {1: 90, 3: 180}) == [
-        "1. Page 3 (180\u00b0)",
-        "2. Page 1 (90\u00b0)",
+        "1. Page 3  [rotated 180\u00b0]",
+        "2. Page 1  [rotated 90\u00b0 \u21bb]",
         "3. Page 2",
     ], "page label helper"
 
+    # rotation actually mutates state: a left turn lands on 270, a right on 90
+    app.edit_source = _Path("fake.pdf")
+    app.edit_pages = [1, 2, 3]
+    app.edit_rotations = {}
+    app._refresh_page_list()
+    app.page_list.selection_set(1)  # page 2
+    app.rotate_page_cw()
+    assert app.edit_rotations == {2: 90}, "right turn applied to page 2"
+    app.rotate_page_ccw()
+    assert app.edit_rotations.get(2) == 0, "left cancels the right turn back to 0"
+    app.rotate_page_ccw()
+    assert app.edit_rotations.get(2) == 270, "further left turn reaches 270"
+    assert app.page_list.curselection() == (1,), "selection kept after rotating"
+    assert "[rotated" in app.page_list.get(1), "label shows the rotation"
 
+    # Edit PDF "Output in same folder" checkbox mirrors the other tabs: ticking
+    # it disables the folder field and Browse button
+    app.edit_same_folder_var.set(False)
+    app._update_edit_output_state()
+    assert str(app.edit_out_entry["state"]) == "normal", "edit entry enabled"
+    app.edit_same_folder_var.set(True)
+    app._update_edit_output_state()
+    assert str(app.edit_out_entry["state"]) == "disabled", "edit entry disabled"
+    assert str(app.edit_browse_button["state"]) == "disabled", "edit browse disabled"
+    assert app.edit_out_folder() is None, "checkbox wins over a stale path"
 
     # ---------- window icon (title bar / taskbar) ----------
     # NOTE: PyInstaller's icon= only brands the exe; the Tk window needs this

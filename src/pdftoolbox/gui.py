@@ -452,6 +452,25 @@ class App:
         this tab is modelled on; split/extract and the watermark/page-number
         stamps are the two most-used extras they share.
         """
+        heading = ttk.Label(
+            self.edit_tab,
+            text="Edit PDF",
+            font=("TkDefaultFont", 12, "bold"),
+        )
+        heading.pack(anchor="w", padx=8, pady=(8, 0))
+        intro = ttk.Label(
+            self.edit_tab,
+            text=(
+                "Rearrange an existing PDF: reorder, rotate or delete pages, "
+                "split or extract a range, and add a watermark or page numbers. "
+                "Changes are saved as a new file; the original is untouched."
+            ),
+            foreground="#555",
+            wraplength=700,
+            justify="left",
+        )
+        intro.pack(anchor="w", padx=8, pady=(0, 6))
+
         source_row = ttk.Frame(self.edit_tab)
         source_row.pack(fill="x", padx=8, pady=(8, 4))
         self.edit_source_var = tk.StringVar(value="No PDF loaded")
@@ -465,13 +484,16 @@ class App:
         self.organize_tab = ttk.Frame(self.edit_notebook)
         self.split_tab = ttk.Frame(self.edit_notebook)
         self.stamp_tab = ttk.Frame(self.edit_notebook)
+        self.text_tab = ttk.Frame(self.edit_notebook)
         self.edit_notebook.add(self.organize_tab, text="Organize Pages")
         self.edit_notebook.add(self.split_tab, text="Split / Extract")
         self.edit_notebook.add(self.stamp_tab, text="Watermark / Numbers")
+        self.edit_notebook.add(self.text_tab, text="Edit Text")
 
         self._build_organize_area()
         self._build_split_area()
         self._build_stamp_area()
+        self._build_text_area()
         self._build_edit_output_area()
 
     def _build_organize_area(self) -> None:
@@ -491,23 +513,54 @@ class App:
         side.pack(side="left", fill="y", padx=6)
         ttk.Button(side, text="Move Up", command=self.move_page_up).pack(fill="x", pady=(4, 2))
         ttk.Button(side, text="Move Down", command=self.move_page_down).pack(fill="x", pady=2)
-        ttk.Button(side, text="Rotate 90\u00b0", command=self.rotate_page_cw).pack(fill="x", pady=2)
+        ttk.Separator(side, orient="horizontal").pack(fill="x", pady=2)
+        ttk.Button(
+            side, text="Rotate \u21ba 90\u00b0 (left)", command=self.rotate_page_ccw
+        ).pack(fill="x", pady=2)
+        ttk.Button(
+            side, text="Rotate \u21bb 90\u00b0 (right)", command=self.rotate_page_cw
+        ).pack(fill="x", pady=2)
         ttk.Button(side, text="Rotate 180\u00b0", command=self.rotate_page_180).pack(fill="x", pady=2)
+        ttk.Separator(side, orient="horizontal").pack(fill="x", pady=2)
         ttk.Button(side, text="Delete Page", command=self.delete_page).pack(fill="x", pady=2)
         ttk.Button(side, text="Reset", command=self.reset_pages).pack(fill="x", pady=(2, 4))
 
-    def _build_edit_output_area(self) -> None:
-        out_row = ttk.Frame(self.edit_tab)
-        out_row.pack(fill="x", padx=8, pady=(0, 4))
-        ttk.Label(out_row, text="Output folder:").pack(side="left")
-        self.edit_out_var = tk.StringVar(value=str(self.config.get("edit_out_dir", "")))
-        ttk.Entry(out_row, textvariable=self.edit_out_var).pack(
-            side="left", fill="x", expand=True, padx=6
+        # NOTE: rotate/delete act on the SELECTED rows, so an empty selection
+        # must say so instead of looking like a dead button
+        self.page_hint_var = tk.StringVar(
+            value="Select a page, then use the buttons."
         )
-        ttk.Button(out_row, text="Browse", command=self.pick_edit_output).pack(side="left")
         ttk.Label(
-            out_row, text="  blank = beside the PDF", foreground="#555"
-        ).pack(side="left")
+            self.organize_tab, textvariable=self.page_hint_var, foreground="#555"
+        ).pack(anchor="w", padx=8, pady=(0, 4))
+
+    def _build_edit_output_area(self) -> None:
+        frame = ttk.LabelFrame(self.edit_tab, text="Edit options")
+        frame.pack(fill="x", padx=8, pady=4)
+        frame.columnconfigure(3, weight=1)
+
+        ttk.Label(frame, text="Output folder:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        self.edit_out_var = tk.StringVar(value=str(self.config.get("edit_out_dir", "")))
+        # NOTE: entry and button are kept as attributes so the "Output in same
+        # folder" checkbox can disable both together (same pattern as the
+        # Convert File and Merge PDF tabs)
+        self.edit_out_entry = ttk.Entry(frame, textvariable=self.edit_out_var)
+        self.edit_out_entry.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
+        self.edit_browse_button = ttk.Button(
+            frame, text="Browse", command=self.pick_edit_output
+        )
+        self.edit_browse_button.grid(row=0, column=3, sticky="e", padx=6, pady=4)
+
+        self.edit_same_folder_var = tk.BooleanVar(
+            value=bool(self.config.get("edit_same_folder", True))
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Output in same folder",
+            variable=self.edit_same_folder_var,
+            command=self._toggle_edit_same_folder,
+        ).grid(row=1, column=1, columnspan=3, sticky="w", padx=6, pady=(0, 4))
+        self._update_edit_output_state()
 
         action = ttk.Frame(self.edit_tab)
         action.pack(fill="x", padx=8, pady=4)
@@ -623,6 +676,82 @@ class App:
             foreground="#555",
         ).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
 
+    def _build_text_area(self) -> None:
+        """Edit Text sub-tab: add text over a page, and find & replace.
+
+        Both are OVERLAY operations - the page's own text is left in place and
+        new text is drawn on top (find & replace paints a cover box first). This
+        is the honest, permissive-stack equivalent of "editing text".
+        """
+        add = ttk.LabelFrame(self.text_tab, text="Add text")
+        add.pack(fill="x", padx=6, pady=(6, 4))
+        ttk.Label(add, text="Text:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        self.add_text_var = tk.StringVar(value="")
+        ttk.Entry(add, textvariable=self.add_text_var, width=40).grid(
+            row=0, column=1, columnspan=5, sticky="ew", pady=4
+        )
+
+        ttk.Label(add, text="Page:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        self.add_text_page_var = tk.StringVar(value="1")
+        ttk.Spinbox(add, from_=1, to=9999, width=5, textvariable=self.add_text_page_var).grid(
+            row=1, column=1, sticky="w", padx=(4, 0), pady=4
+        )
+        ttk.Label(add, text="X:").grid(row=1, column=2, sticky="e", padx=(8, 0), pady=4)
+        self.add_text_x_var = tk.StringVar(value="72")
+        ttk.Spinbox(add, from_=0, to=9999, width=6, textvariable=self.add_text_x_var).grid(
+            row=1, column=3, sticky="w", padx=(4, 0), pady=4
+        )
+        ttk.Label(add, text="Y (from bottom):").grid(row=1, column=4, sticky="e", padx=(8, 0), pady=4)
+        self.add_text_y_var = tk.StringVar(value="72")
+        ttk.Spinbox(add, from_=0, to=9999, width=6, textvariable=self.add_text_y_var).grid(
+            row=1, column=5, sticky="w", padx=(4, 0), pady=4
+        )
+
+        ttk.Label(add, text="Size:").grid(row=2, column=0, sticky="w", padx=6, pady=(0, 6))
+        self.add_text_size_var = tk.StringVar(value="14")
+        ttk.Spinbox(add, from_=4, to=200, width=5, textvariable=self.add_text_size_var).grid(
+            row=2, column=1, sticky="w", padx=(4, 0), pady=(0, 6)
+        )
+        ttk.Button(add, text="Add Text", command=self.run_add_text).grid(
+            row=2, column=3, sticky="w", padx=(8, 0), pady=(0, 6)
+        )
+        ttk.Label(
+            add,
+            text="  Placed at (X, Y) in points; Y counts up from the page bottom.",
+            foreground="#555",
+        ).grid(row=2, column=4, columnspan=2, sticky="w", pady=(0, 6))
+
+        self._build_replace_area()
+
+    def _build_replace_area(self) -> None:
+        repl = ttk.LabelFrame(self.text_tab, text="Find and replace")
+        repl.pack(fill="x", padx=6, pady=4)
+        ttk.Label(repl, text="Find:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        self.find_var = tk.StringVar(value="")
+        ttk.Entry(repl, textvariable=self.find_var, width=28).grid(
+            row=0, column=1, sticky="ew", pady=4
+        )
+        ttk.Label(repl, text="Replace:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        self.replace_var = tk.StringVar(value="")
+        ttk.Entry(repl, textvariable=self.replace_var, width=28).grid(
+            row=1, column=1, sticky="ew", pady=4
+        )
+        self.find_case_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(repl, text="Match case", variable=self.find_case_var).grid(
+            row=2, column=1, sticky="w", padx=(4, 0), pady=(0, 4)
+        )
+        ttk.Button(repl, text="Find", command=self.run_find_text).grid(
+            row=0, column=2, sticky="w", padx=8, pady=4
+        )
+        ttk.Button(repl, text="Replace All", command=self.run_replace_text).grid(
+            row=1, column=2, sticky="w", padx=8, pady=4
+        )
+        self.find_result_var = tk.StringVar(value="")
+        ttk.Label(repl, textvariable=self.find_result_var, foreground="#555").grid(
+            row=3, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 6)
+        )
+
+
     def _build_about_area(self) -> None:
         ttk.Label(
             self.about_tab, text="PDF-X", font=("TkDefaultFont", 16, "bold")
@@ -685,16 +814,25 @@ class App:
 
     @staticmethod
     def page_labels(pages: list[int], rotations: dict[int, int]) -> list[str]:
-        """The Organize list as shown: "1. Page 3 (90\u00b0)".
+        """The Organize list as shown: "1. Page 3  [rotated 90\u00b0 \u21bb]".
 
         NOTE: the leading number is the POSITION in the new document; the page
-        number and rotation follow it. Pure so the rule is unit-testable.
+        number and an explicit rotation tag follow it. The tag names the
+        direction so a turned page is obvious at a glance. Pure, so the rule is
+        unit-testable without a display.
         """
         labels: list[str] = []
         for position, source_page in enumerate(pages, start=1):
             angle = rotations.get(source_page, 0) % 360
-            suffix = f" ({angle}\u00b0)" if angle else ""
-            labels.append(f"{position}. Page {source_page}{suffix}")
+            if angle == 0:
+                tag = ""
+            elif angle == 90:
+                tag = "  [rotated 90\u00b0 \u21bb]"
+            elif angle == 180:
+                tag = "  [rotated 180\u00b0]"
+            else:  # 270
+                tag = "  [rotated 90\u00b0 \u21ba]"
+            labels.append(f"{position}. Page {source_page}{tag}")
         return labels
 
     def open_edit_pdf(self) -> None:
@@ -719,10 +857,14 @@ class App:
         self._refresh_page_list()
         self.edit_status_var.set("Ready")
 
-    def _refresh_page_list(self) -> None:
+    def _refresh_page_list(self, keep_selection: bool = False) -> None:
+        selection = self.page_list.curselection() if keep_selection else ()
         self.page_list.delete(0, "end")
         for label in self.page_labels(self.edit_pages, self.edit_rotations):
             self.page_list.insert("end", label)
+        for index in selection:
+            if index < self.page_list.size():
+                self.page_list.selection_set(index)
 
     def _edit_ready(self) -> bool:
         if self.edit_source is None:
@@ -759,24 +901,48 @@ class App:
                 self.page_list.selection_set(index)
 
     def rotate_page_cw(self) -> None:
+        # clockwise (right): PDF /Rotate is clockwise-positive
         self._rotate_pages(90)
+
+    def rotate_page_ccw(self) -> None:
+        # counter-clockwise (left): -90 stored as 270 so /Rotate stays 0/90/180/270
+        self._rotate_pages(-90)
 
     def rotate_page_180(self) -> None:
         self._rotate_pages(180)
 
     def _rotate_pages(self, angle: int) -> None:
-        for position in self._selected_page_positions():
+        selection = self._selected_page_positions()
+        if not selection and not self._warn_no_selection("rotate"):
+            return
+        for position in selection:
             source_page = self.edit_pages[position]
             # NOTE: rotation is keyed by SOURCE page, so a turn sticks to the
             # page even after it is moved elsewhere in the list
             self.edit_rotations[source_page] = (
                 self.edit_rotations.get(source_page, 0) + angle
             ) % 360
-        self._refresh_page_list()
+        self._refresh_page_list(keep_selection=True)
+        self.page_hint_var.set(
+            f"Rotated {len(selection)} page(s). "
+            f"Rotation shows in the list; press Apply to save."
+        )
+
+    def _warn_no_selection(self, action: str) -> bool:
+        """Tell the user to pick a row first; returns False when there is none.
+
+        NOTE: the buttons act on the selection, so without this an unselected
+        click did nothing at all and looked broken.
+        """
+        if self.edit_source is None:
+            return False
+        messagebox.showinfo("PDF-X", f"Select a page to {action} first.")
+        self.page_hint_var.set(f"Select a page to {action} first.")
+        return False
 
     def delete_page(self) -> None:
         selection = self._selected_page_positions()
-        if not selection:
+        if not selection and not self._warn_no_selection("delete"):
             return
         for index in reversed(selection):
             del self.edit_pages[index]
@@ -784,7 +950,10 @@ class App:
             messagebox.showwarning("PDF-X", "Every page was deleted; resetting.")
             self.reset_pages()
             return
-        self._refresh_page_list()
+        self._refresh_page_list(keep_selection=True)
+        self.page_hint_var.set(
+            f"Deleted {len(selection)} page(s). Press Apply to save."
+        )
 
     def reset_pages(self) -> None:
         if self.edit_source is None:
@@ -795,19 +964,22 @@ class App:
         self._refresh_page_list()
 
     def _on_page_drag_start(self, event) -> None:
+        # NOTE: only remember a candidate index - the Listbox must keep its own
+        # click-to-select behaviour, so nothing is moved until the pointer
+        # actually drags onto a different row
         self._page_drag_index = self.page_list.nearest(event.y)
 
     def _on_page_drag_motion(self, event) -> None:
-        index = self.page_list.nearest(event.y)
         current = getattr(self, "_page_drag_index", None)
-        if current is None or current == index or index < 0:
+        if current is None:
             return
-        if index >= len(self.edit_pages):
+        index = self.page_list.nearest(event.y)
+        if index == current or index < 0 or index >= len(self.edit_pages):
             return
         item = self.edit_pages.pop(current)
         self.edit_pages.insert(index, item)
         self._page_drag_index = index
-        self._refresh_page_list()
+        self._refresh_page_list(keep_selection=True)
 
     def _on_page_drag_drop(self, _event) -> None:
         self._page_drag_index = None
@@ -828,8 +1000,25 @@ class App:
         return output_path(src, folder, ".pdf", tag)
 
     def edit_out_folder(self) -> Path | None:
+        """The chosen folder, or None when writing beside the PDF.
+
+        NOTE: mirrors start_convert - the checkbox, not the (possibly disabled)
+        entry, decides intent, so a stale path in the disabled field is ignored.
+        """
+        if self.edit_same_folder_var.get():
+            return None
         text = self.edit_out_var.get().strip()
         return Path(text) if text else None
+
+    def _toggle_edit_same_folder(self) -> None:
+        self._update_edit_output_state()
+        self.config["edit_same_folder"] = self.edit_same_folder_var.get()
+        self._save_settings()
+
+    def _update_edit_output_state(self) -> None:
+        state = "disabled" if self.edit_same_folder_var.get() else "normal"
+        self.edit_out_entry.configure(state=state)
+        self.edit_browse_button.configure(state=state)
 
     def pick_edit_output(self) -> None:
         current = self.edit_out_var.get().strip()
@@ -874,14 +1063,19 @@ class App:
         self.edit_log.configure(state="disabled")
 
     def _report_edit_result(self, result, note: str) -> None:
-        """Log one path or a list of paths from an edit operation."""
+        """Log the path(s) an edit produced and set the status line.
+
+        NOTE: a job may return a tuple mixing a path with a count (e.g. the
+        replace result); only the Path items are logged, and the note carries
+        the human summary.
+        """
         if isinstance(result, (list, tuple)):
-            for path in result:
+            paths = [item for item in result if isinstance(item, Path)]
+            for path in paths:
                 self._edit_log_write(f"ok      {path}")
-            self.edit_status_var.set(f"{note}: {len(result)} file(s)")
         else:
             self._edit_log_write(f"ok      {result}")
-            self.edit_status_var.set(note)
+        self.edit_status_var.set(note)
         self._set_edit_busy(False)
 
     def run_organize(self) -> None:
@@ -961,8 +1155,111 @@ class App:
 
         self._run_edit_task(work, "Page numbers added")
 
+    def run_add_text(self) -> None:
+        src = self.edit_source
+        if not self._edit_ready():
+            return
+        text = self.add_text_var.get().strip()
+        if not text:
+            messagebox.showinfo("PDF-X", "Enter the text to add.")
+            return
+        try:
+            page = int(self.add_text_page_var.get())
+            x = float(self.add_text_x_var.get())
+            y = float(self.add_text_y_var.get())
+            size = int(self.add_text_size_var.get())
+        except ValueError:
+            messagebox.showerror("PDF-X", "Check the page, X, Y and size values.")
+            return
+        target = self._edit_output_target(src, "_text")
+        # NOTE: the UI's Y counts up from the bottom (like a PDF viewer); the
+        # engine anchors from the top, so flip it here using the page height
+        height = pdf_edit.page_height(src, page)
+        item = pdf_edit.PlacedText(
+            page=page,
+            text=text,
+            x=x,
+            top=max(0.0, height - y - size),
+            font_size=size,
+        )
 
+        def work():
+            return pdf_edit.add_text(src, target, [item])
 
+        self._run_edit_task(work, "Text added")
+
+    def run_find_text(self) -> None:
+        src = self.edit_source
+        if not self._edit_ready():
+            return
+        needle = self.find_var.get()
+        if not needle:
+            messagebox.showinfo("PDF-X", "Enter text to find.")
+            return
+        case = self.find_case_var.get()
+
+        def work():
+            return pdf_edit.find_text(src, needle, case_sensitive=case)
+
+        def _report(matches):
+            if not matches:
+                self.find_result_var.set(f"No matches for {needle!r}.")
+                return
+            pages = sorted({m.page for m in matches})
+            self.find_result_var.set(
+                f"{len(matches)} match(es) on page(s): "
+                + ", ".join(str(p) for p in pages)
+            )
+
+        try:
+            matches = work()
+        except ConversionError as exc:
+            messagebox.showerror("PDF-X", str(exc))
+            return
+        _report(matches)
+
+    def run_replace_text(self) -> None:
+        src = self.edit_source
+        if not self._edit_ready():
+            return
+        needle = self.find_var.get()
+        replacement = self.replace_var.get()
+        if not needle:
+            messagebox.showinfo("PDF-X", "Enter text to find.")
+            return
+        case = self.find_case_var.get()
+        target = self._edit_output_target(src, "_replaced")
+        self.find_result_var.set(f"Replacing {needle!r} ...")
+
+        def work():
+            path, count = pdf_edit.replace_text(
+                src, target, needle, replacement, case_sensitive=case
+            )
+            return path, count
+
+        def _done(result):
+            path, count = result
+            self.find_result_var.set(f"Replaced {count} occurrence(s) -> {path.name}")
+
+        self._run_edit_task_custom(work, _done, "Replaced text")
+
+    def _run_edit_task_custom(self, work, on_success, done_message: str) -> None:
+        """Like _run_edit_task, but lets a job report its own success detail."""
+        if self.worker and self.worker.is_alive():
+            return
+        self._set_edit_busy(True)
+        self.edit_status_var.set("Working...")
+
+        def _worker() -> None:
+            try:
+                self.events.put(("edit-custom", (work(), on_success, done_message)))
+            except (ConversionError, EngineUnavailable) as exc:
+                self.events.put(("edit-failed", str(exc)))
+            except Exception as exc:  # noqa: BLE001 - last-resort UI guard
+                self.events.put(("edit-failed", str(exc)))
+
+        self.worker = threading.Thread(target=_worker, daemon=True)
+        self.worker.start()
 
     def add_folder(self) -> None:
         folder = filedialog.askdirectory(
@@ -1441,6 +1738,13 @@ class App:
                 elif kind == "edit-done":
                     result, note = payload
                     self._report_edit_result(result, note)
+                elif kind == "edit-custom":
+                    result, on_success, note = payload
+                    self._report_edit_result(result, note)
+                    try:
+                        on_success(result)
+                    except Exception as exc:  # noqa: BLE001 - a report bug must not crash Tk
+                        self._edit_log_write(f"note    {exc}")
                 elif kind == "edit-failed":
                     self._edit_log_write(f"FAILED  edit: {payload}")
                     self.edit_status_var.set("Edit failed")

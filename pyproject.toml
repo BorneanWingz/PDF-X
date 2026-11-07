@@ -1,6 +1,6 @@
 [project]
 name = "pdf-toolbox"
-version = "0.1.3"
+version = "0.1.4"
 description = "Portable offline PDF converter and OCR toolbox for internal team use"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"

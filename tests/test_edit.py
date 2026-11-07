@@ -160,3 +160,61 @@ class TestHelpers:
         with pytest.raises(ConversionError, match="password-protected"):
             pdf_edit.page_count(locked)
 
+
+class TestTextEditing:
+    def test_page_height(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["A", "B"])
+        # A4 is 842 points tall; allow the odd fraction
+        assert 800 < pdf_edit.page_height(source, 1) < 900
+
+    def test_add_text_is_selectable(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["ORIGINAL BODY"])
+        out = pdf_edit.add_text(
+            source,
+            tmp_path / "added.pdf",
+            [pdf_edit.PlacedText(page=1, text="APPROVED", x=72, top=60, font_size=18)],
+        )
+        text = " ".join(_page_texts(out)).upper()
+        assert "APPROVED" in text and "ORIGINAL" in text
+
+    def test_find_text_reports_pages_and_boxes(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Total 100 USD", "Again 100 here"])
+        matches = pdf_edit.find_text(source, "100")
+        assert [m.page for m in matches] == [1, 2]
+        for match in matches:
+            assert match.width > 0 and match.height > 0
+
+    def test_find_text_case_sensitivity(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Hello World"])
+        assert pdf_edit.find_text(source, "hello") != []
+        assert pdf_edit.find_text(source, "hello", case_sensitive=True) == []
+        assert pdf_edit.find_text(source, "Hello", case_sensitive=True) != []
+
+    def test_find_text_missing_returns_empty(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["nothing here"])
+        assert pdf_edit.find_text(source, "absent") == []
+
+    def test_replace_text_covers_and_writes_new(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Amount: 100 USD"])
+        out, count = pdf_edit.replace_text(source, tmp_path / "rep.pdf", "100", "250")
+        assert count == 1
+        text = " ".join(_page_texts(out))
+        # the replacement is written on top; the original text layer stays beneath
+        assert "250" in text
+
+    def test_replace_text_not_found_raises(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Amount: 100"])
+        with pytest.raises(ConversionError, match="not found"):
+            pdf_edit.replace_text(source, tmp_path / "rep.pdf", "nope", "x")
+
+    def test_replace_text_all_occurrences(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["100 and 100", "100 only"])
+        out, count = pdf_edit.replace_text(source, tmp_path / "rep.pdf", "100", "7")
+        assert count == 3
+
+    def test_add_text_requires_content(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        with pytest.raises(ConversionError, match="no text"):
+            pdf_edit.add_text(source, tmp_path / "x.pdf", [])
+
+

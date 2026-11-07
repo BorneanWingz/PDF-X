@@ -26,6 +26,9 @@ DEFAULTS: dict[str, Any] = {
     "merge_out_dir": "",
     # edit_out_dir: folder chosen on the Edit PDF tab (blank = beside the PDF)
     "edit_out_dir": "",
+    # edit_same_folder: Edit PDF's "Output in same folder" checkbox (default on,
+    # since editing a PDF most often writes the result back beside it)
+    "edit_same_folder": True,
     "promo": {
         "enabled": True,
         "url": "https://example.invalid/pdf-toolbox/promo.json",

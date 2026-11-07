@@ -104,9 +104,23 @@ def test_merge_list_numbering_ignores_extension_case() -> None:
 
 
 def test_page_labels_show_position_number_and_rotation() -> None:
-    # position in the new document, source page number, and rotation
+    # position in the new document, source page number, and an explicit
+    # clockwise/counter-clockwise rotation tag
     labels = App.page_labels([3, 1, 2], {1: 90, 3: 180})
-    assert labels == ["1. Page 3 (180\u00b0)", "2. Page 1 (90\u00b0)", "3. Page 2"]
+    assert labels == [
+        "1. Page 3  [rotated 180\u00b0]",
+        "2. Page 1  [rotated 90\u00b0 \u21bb]",
+        "3. Page 2",
+    ]
+
+
+def test_page_labels_distinguish_left_and_right_rotation() -> None:
+    # 90 is a clockwise (right) turn, 270 a counter-clockwise (left) one
+    labels = App.page_labels([1, 2], {1: 90, 2: 270})
+    assert labels == [
+        "1. Page 1  [rotated 90\u00b0 \u21bb]",
+        "2. Page 2  [rotated 90\u00b0 \u21ba]",
+    ]
 
 
 def test_page_labels_without_rotation() -> None:
