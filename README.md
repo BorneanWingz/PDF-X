@@ -36,12 +36,20 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
     page range (`1-3,5`) into one PDF.
   - **Watermark / Numbers**: stamp a diagonal watermark, and add page numbers
     such as `Page 1 of 10` in a choice of corners.
-  - **Edit Text**: **Add text** a note/label at any position (page, X, Y, size),
-    or **Find and replace** across the document. Both are *overlay* edits — new
-    text is drawn over the page and replace paints a cover box over the old
-    words. The original characters stay in the file's text layer, because
-    rewriting a PDF's existing text streams needs a full content-stream engine,
-    which this permissive stack does not have.
+  - **Edit Text**: click a selectable text line in the page preview and queue
+    a change, or choose **Add Text Box**, type in the box and drag its border
+    into position on the current page. Choose an installed font and size; for
+    an existing line the editor suggests an exact or close installed font
+    based on the PDF font name. Use **Save Edited Copy** to save both added
+    text and queued changes together.
+    Selected TrueType fonts and TrueType collections are embedded in the output;
+    unsupported font outlines are reported when saving. This is a line-level overlay:
+    it does not reflow paragraphs, and the original characters remain beneath
+    the cover box in the PDF text layer. Selecting existing text requires a
+    text layer; you can still add text to scanned pages. The visual editor
+    currently supports upright pages only.
+  - **Find & Replace**: search and replace terms across the document. These
+    are also visual overlays; adding text is in **Edit Text**.
   - Results are new files named `<name>_pdfx...pdf` (e.g. `_watermark`,
     `_numbered`, `_text`, `_replaced`, `_part1`) and never overwrite the source.
     The output folder uses the same controls as the other tabs: a folder field

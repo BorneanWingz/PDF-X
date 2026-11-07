@@ -5,12 +5,11 @@ PDF editor offers - reorganise (reorder/rotate/delete), split and extract - plus
 the reportlab-backed stamps (watermark and page numbers) and text editing
 (add text over a page, and find-and-replace by white-out + overlay).
 
-Text editing here is OVERLAY-based: the original text stays in the file and new
-text is drawn on top (find-and-replace covers the old words with a filled box
-first). This is deliberate - rewriting existing PDF text streams needs a full
-content-stream engine, which the permissive stack does not have.
-Everything works on the pages of an existing PDF: no rendering pass, no AGPL
-dependency.
+Text edits are OVERLAY-based: the original text stays in the file and new text
+is drawn on top. The visual line editor renders pages for selection, then writes
+the corrections into a new PDF with cover boxes and replacement text. It does
+not reflow paragraphs or securely remove original text. No AGPL editor engine
+is required.
 
 Design rule shared with pdf_merge: a result is never written over an existing
 file. Every writer here goes through :func:`unique_path`.
@@ -19,7 +18,10 @@ file. Every writer here goes through :func:`unique_path`.
 from __future__ import annotations
 
 import io
+import ctypes
+import hashlib
 from dataclasses import dataclass
+from math import floor
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -27,6 +29,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
 
 from . import ConversionError
+from ..system_fonts import FontFace
 
 
 def _open_reader(src: Path) -> PdfReader:
@@ -337,6 +340,7 @@ class TextMatch:
     top: float
     bottom: float
     text: str
+    font_name: str = ""
 
     @property
     def width(self) -> float:
@@ -380,6 +384,84 @@ def find_text(
     finally:
         doc.close()
     return matches
+
+
+def text_lines(src: Path, page_number: int) -> list[TextMatch]:
+    """Return selectable horizontal text lines and their page boxes.
+
+    The lines are grouped from PDFium character baselines. This is intentionally
+    a lightweight editor model, not a reconstruction of paragraphs or columns.
+    """
+    doc = pdfium.PdfDocument(str(src))
+    try:
+        if not 1 <= page_number <= len(doc):
+            raise ConversionError(
+                f"page {page_number} out of range (1-{len(doc)})"
+            )
+        page = doc[page_number - 1]
+        if page.get_rotation():
+            raise ConversionError(
+                "Visual text editing currently supports upright pages only. "
+                "Rotate the page to 0 degrees and reopen the PDF."
+            )
+        page_height = float(page.get_height())
+        textpage = page.get_textpage()
+        try:
+            characters: list[tuple[float, float, float, float, str, str]] = []
+            for index in range(textpage.count_chars()):
+                char = textpage.get_text_range(index, 1)
+                box = textpage.get_charbox(index)
+                if not char or char in "\r\n" or box is None:
+                    continue
+                x0, y0, x1, y1 = map(float, box)
+                if x1 <= x0:
+                    continue
+                flags = ctypes.c_long()
+                length = pdfium.raw.FPDFText_GetFontInfo(textpage, index, None, 0, ctypes.byref(flags))
+                font_name = ""
+                if length:
+                    buffer = ctypes.create_string_buffer(length)
+                    pdfium.raw.FPDFText_GetFontInfo(textpage, index, buffer, length, ctypes.byref(flags))
+                    font_name = buffer.value.decode("utf-8", errors="replace")
+                characters.append((y0, x0, x1, y1, char, font_name))
+        finally:
+            textpage.close()
+    finally:
+        doc.close()
+
+    lines: list[list[tuple[float, float, float, float, str, str]]] = []
+    baselines: list[float] = []
+    for character in sorted(characters, key=lambda item: (-item[0], item[1])):
+        baseline = character[0]
+        if not lines or abs(baselines[-1] - baseline) > 2.5:
+            lines.append([character])
+            baselines.append(baseline)
+        else:
+            lines[-1].append(character)
+            baselines[-1] = sum(item[0] for item in lines[-1]) / len(lines[-1])
+
+    result: list[TextMatch] = []
+    for line in lines:
+        line.sort(key=lambda item: item[1])
+        text = "".join(item[4] for item in line).strip()
+        if not text:
+            continue
+        x0 = min(item[1] for item in line)
+        x1 = max(item[2] for item in line)
+        top = page_height - max(item[3] for item in line)
+        bottom = page_height - min(item[0] for item in line)
+        result.append(
+            TextMatch(
+                page=page_number,
+                x0=x0,
+                x1=x1,
+                top=top,
+                bottom=bottom,
+                text=text,
+                font_name=line[0][5],
+            )
+        )
+    return result
 
 
 def _page_matches(
@@ -449,6 +531,8 @@ class PlacedText:
     top: float
     font_size: int = 12
     color: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    font_path: Path | None = None
+    font_index: int = 0
 
 
 
@@ -535,6 +619,94 @@ def replace_text(
     return _write(writer, out_path), len(matches)
 
 
+def edit_text_lines(
+    src: Path,
+    out_path: Path,
+    edits: list[tuple[TextMatch, str]],
+    font_paths: list[FontFace | None] | None = None,
+    additions: list[PlacedText] | None = None,
+) -> Path:
+    """Cover selected text lines and draw replacements on a new PDF copy.
+
+    Existing PDF text remains beneath the cover boxes, so this is a visual
+    correction rather than secure redaction or content-stream replacement.
+    """
+    if not edits and not additions:
+        raise ConversionError("no text changes to save")
+    if font_paths is not None and len(font_paths) != len(edits):
+        raise ConversionError("each text change needs a matching font")
+
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    replacements: dict[int, list[PlacedText]] = {}
+    matches_by_page: dict[int, list[TextMatch]] = {}
+    for index, (match, replacement) in enumerate(edits):
+        if "\n" in replacement or "\r" in replacement:
+            raise ConversionError("replacement text must fit on one line")
+        if not replacement.strip():
+            replacements.setdefault(match.page, [])
+        else:
+            size = max(6, min(200, int(round(match.height * 0.82))))
+            if "\x00" in replacement:
+                raise ConversionError("replacement text cannot contain a null character")
+            try:
+                font = font_paths[index] if font_paths is not None else None
+                font_name = _register_text_font(font, replacement)
+                measured = stringWidth(replacement, font_name, size)
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise ConversionError(
+                    "replacement contains characters unsupported by the built-in font"
+                ) from exc
+            if measured > match.width:
+                size = floor(size * match.width / measured)
+            if size < 6:
+                raise ConversionError(
+                    f"replacement text does not fit the selected line: "
+                    f"{replacement!r}"
+                )
+            replacements.setdefault(match.page, []).append(
+                PlacedText(
+                    page=match.page,
+                    text=replacement,
+                    x=match.x0,
+                    top=match.top,
+                    font_size=size,
+                    font_path=font.path if font else None,
+                    font_index=font.index if font else 0,
+                )
+            )
+        matches_by_page.setdefault(match.page, []).append(match)
+
+    reader = _open_reader(src)
+    for item in additions or []:
+        if not item.text.strip():
+            raise ConversionError("added text cannot be empty")
+        if "\n" in item.text or "\r" in item.text or item.font_size < 1:
+            raise ConversionError("added text must be one line with a positive font size")
+        replacements.setdefault(item.page, []).append(item)
+    if any(page < 1 or page > len(reader.pages) for page in set(matches_by_page) | set(replacements)):
+        raise ConversionError("a selected text line refers to a missing page")
+
+    writer = PdfWriter()
+    for index, source_page in enumerate(reader.pages, start=1):
+        page = writer.add_page(source_page)
+        page_matches = matches_by_page.get(index)
+        page_replacements = replacements.get(index, [])
+        if not page_matches and not page_replacements:
+            continue
+        overlay = _replace_reader(
+            float(page.mediabox.width),
+            float(page.mediabox.height),
+            page_matches or [],
+            page_replacements,
+            (1.0, 1.0, 1.0),
+        )
+        page.merge_page(overlay.pages[0])
+
+    _copy_metadata(reader, writer)
+    return _write(writer, out_path)
+
+
 def _text_reader(width: float, height: float, items: list[PlacedText]) -> PdfReader:
     """A one-page reportlab PDF drawing each placed text at its anchor."""
     from reportlab.lib.colors import Color
@@ -546,12 +718,32 @@ def _text_reader(width: float, height: float, items: list[PlacedText]) -> PdfRea
         # reportlab's origin is bottom-left; convert the top-down anchor
         y = height - item.top - item.font_size
         pdf.setFillColor(Color(*item.color))
-        pdf.setFont("Helvetica", item.font_size)
+        font = FontFace(item.font_path, item.font_index) if item.font_path else None
+        pdf.setFont(_register_text_font(font, item.text), item.font_size)
         pdf.drawString(item.x, y, item.text)
     pdf.showPage()
     pdf.save()
     buffer.seek(0)
     return PdfReader(buffer)
+
+
+def _register_text_font(face: FontFace | None, text: str) -> str:
+    if face is None:
+        return "Helvetica"
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont, TTFError
+
+    path = face.path
+    name = "PDFX_" + hashlib.sha256(f"{path}:{face.index}".encode("utf-8")).hexdigest()
+    try:
+        font = pdfmetrics.getFont(name) if name in pdfmetrics.getRegisteredFontNames() else TTFont(name, str(path), subfontIndex=face.index)
+        missing = {char for char in text if ord(char) not in font.face.charWidths}
+        if missing:
+            raise ConversionError(f"font {path.name} does not support: {''.join(sorted(missing))}")
+        pdfmetrics.registerFont(font)
+    except (OSError, TTFError) as exc:
+        raise ConversionError(f"cannot use font {path.name}: {exc}") from exc
+    return name
 
 
 def _replace_reader(
@@ -577,10 +769,10 @@ def _replace_reader(
     pdf.setFillColor(Color(0, 0, 0))
     for item in replacements:
         y = height - item.top - item.font_size
-        pdf.setFont("Helvetica", item.font_size)
+        font = FontFace(item.font_path, item.font_index) if item.font_path else None
+        pdf.setFont(_register_text_font(font, item.text), item.font_size)
         pdf.drawString(item.x, y, item.text)
     pdf.showPage()
     pdf.save()
     buffer.seek(0)
     return PdfReader(buffer)
-

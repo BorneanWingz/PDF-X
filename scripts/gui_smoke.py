@@ -6,6 +6,7 @@ import sys
 import tempfile
 import tkinter as tk
 from pathlib import Path
+from types import SimpleNamespace
 from tkinterdnd2 import TkinterDnD
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,12 +115,72 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
 
     # Edit PDF tab exists with its four sub-tabs
     assert app.notebook.tab(2, "text") == "Edit PDF", "edit tab present"
-    assert [app.edit_notebook.tab(i, "text") for i in range(4)] == [
+    assert [app.edit_notebook.tab(i, "text") for i in range(5)] == [
         "Organize Pages",
         "Split / Extract",
         "Watermark / Numbers",
         "Edit Text",
+        "Find & Replace",
     ], "edit sub-tabs"
+    def button_labels(widget):
+        labels = []
+        for child in widget.winfo_children():
+            if child.winfo_class() in ("TButton", "Button"):
+                labels.append(child.cget("text"))
+            labels.extend(button_labels(child))
+        return labels
+
+    assert "Add Text Box" in button_labels(app.visual_text_tab)
+    assert not any("add text" in label.lower() for label in button_labels(app.text_tab))
+    assert {"Find", "Replace All"} <= set(button_labels(app.text_tab))
+
+    visual_pdf = scratch / "visual-edit.pdf"
+    visual = _reportlab_canvas(visual_pdf)
+    visual.drawString(72, 720, "Select this line")
+    visual.save()
+    real_open_dialog = gui_module.filedialog.askopenfilenames
+    gui_module.filedialog.askopenfilenames = lambda **_kwargs: [str(visual_pdf)]
+    try:
+        app.open_edit_pdf()
+    finally:
+        gui_module.filedialog.askopenfilenames = real_open_dialog
+    assert app.visual_text_lines, "selectable PDF text should appear in the viewer"
+    line = app.visual_text_lines[0]
+    app._select_visual_text(
+        SimpleNamespace(x=int(line.x0 + 1), y=int(line.top + 1))
+    )
+    assert app.visual_text_var.get() == "Select this line", "clicked line selected"
+    app.visual_text_var.set("Updated line")
+    app._queue_visual_text_change()
+    assert len(app.visual_text_edits) == 1, "line replacement queued"
+    assert str(app.visual_text_save_button["state"]) == "normal"
+    assert app.visual_text_fonts[app._visual_text_key(line)] == app.system_fonts[app.text_font_var.get()]
+
+    app._add_text_box()
+    assert len(app.placed_text) == 1
+    app.placed_text_entry.delete(0, "end")
+    app.placed_text_entry.insert(0, "Dragged note")
+    assert app.visual_text_canvas.find_withtag("box-0"), "on-page entry is visible"
+    item = app.placed_text[0]
+    app._visual_text_click(SimpleNamespace(x=int(item.x + 5), y=int(item.top + 5)))
+    app._drag_placed_text(SimpleNamespace(x=int(item.x + 45), y=int(item.top + 65)))
+    app._end_text_drag(None)
+    item = app.placed_text[0]
+    assert item.x == 60 and item.top == 80, (item.x, item.top)
+    assert item.text == "Dragged note"
+    real_runner = app._run_edit_task_custom
+    results = []
+    app._run_edit_task_custom = lambda work, _done, _message: results.append(work())
+    try:
+        app._save_visual_text_changes()
+    finally:
+        app._run_edit_task_custom = real_runner
+    from pypdf import PdfReader
+    saved = PdfReader(str(results[0])).pages[0].extract_text()
+    assert "Updated line" in saved and "Dragged note" in saved
+    app._remove_text_box()
+    assert not app.placed_text
+
     assert App.page_labels([3, 1, 2], {1: 90, 3: 180}) == [
         "1. Page 3  [rotated 180\u00b0]",
         "2. Page 1  [rotated 90\u00b0 \u21bb]",

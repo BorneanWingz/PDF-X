@@ -34,7 +34,7 @@ if is_internal:
     excludes = []
 else:
     hidden_imports = common_hidden
-    excludes = ["pdf2docx", "fitz", "pymupdf", "cv2", "docx"]
+    excludes = ["pdf2docx", "fitz", "pymupdf", "docx"]
 
 # NOTE: the icon is ALSO shipped as data. icon= only stamps the exe resource
 # (what Explorer shows); the Tk title bar reads the file at runtime through

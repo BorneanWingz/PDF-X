@@ -177,6 +177,79 @@ class TestTextEditing:
         text = " ".join(_page_texts(out)).upper()
         assert "APPROVED" in text and "ORIGINAL" in text
 
+    def test_selected_font_and_position_are_written_with_line_edit(self, tmp_path: Path) -> None:
+        from pdftoolbox.system_fonts import installed_fonts
+
+        fonts = installed_fonts()
+        if not fonts:
+            pytest.skip("no installed TrueType fonts")
+        font = fonts.get("Arial", next(iter(fonts.values())))
+        source = _make_pdf(tmp_path / "book.pdf", ["Original line", "Second page"])
+        match = pdf_edit.text_lines(source, 1)[0]
+        assert match.font_name
+        out = pdf_edit.edit_text_lines(
+            source, tmp_path / "edited.pdf", [(match, "Corrected")], [font],
+            [pdf_edit.PlacedText(2, "Caf\u00e9 note", 100, 120, 18,
+                                 font_path=font.path, font_index=font.index)],
+        )
+        assert "Corrected" in _page_texts(out)[0]
+        assert "Caf\u00e9 note" in _page_texts(out)[1]
+        note = pdf_edit.find_text(out, "Caf\u00e9")[0]
+        assert note.page == 2
+        assert 99 <= note.x0 <= 103
+        assert 115 <= note.top <= 140
+        fonts_in_pdf = PdfReader(str(out)).pages[1]["/Resources"]["/Font"]
+        assert any("/FontDescriptor" in font_ref.get_object().get("/DescendantFonts", [font_ref])[0].get_object()
+                   or "/FontDescriptor" in font_ref.get_object()
+                   for font_ref in fonts_in_pdf.values())
+
+    def test_added_text_rejects_missing_font_file(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        with pytest.raises(ConversionError, match="cannot use font"):
+            pdf_edit.edit_text_lines(
+                source, tmp_path / "out.pdf", [], additions=[
+                    pdf_edit.PlacedText(1, "Text", 20, 20, font_path=tmp_path / "missing.ttf")
+                ],
+            )
+
+    def test_collection_face_is_embedded(self, tmp_path: Path) -> None:
+        from pdftoolbox.system_fonts import installed_fonts
+
+        font = next((face for face in installed_fonts().values() if face.index > 0), None)
+        if font is None:
+            pytest.skip("no multi-face TrueType collection installed")
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        out = pdf_edit.edit_text_lines(
+            source, tmp_path / "out.pdf", [], additions=[
+                pdf_edit.PlacedText(1, "Collection", 20, 20,
+                                    font_path=font.path, font_index=font.index)
+            ],
+        )
+        assert "Collection" in _page_texts(out)[0]
+
+    def test_collection_can_embed_cjk_text(self, tmp_path: Path) -> None:
+        from pdftoolbox.system_fonts import installed_fonts
+
+        font = installed_fonts().get("Microsoft YaHei UI")
+        if font is None:
+            pytest.skip("Microsoft YaHei UI is not installed")
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        out = pdf_edit.edit_text_lines(
+            source, tmp_path / "out.pdf", [], additions=[
+                pdf_edit.PlacedText(1, "\u4e2d\u6587", 20, 20, font_path=font.path,
+                                    font_index=font.index)
+            ],
+        )
+        assert "\u4e2d\u6587" in _page_texts(out)[0]
+
+    def test_font_suggestions_distinguish_exact_and_fallback(self) -> None:
+        from pdftoolbox.system_fonts import FontFace, suggest_font
+
+        fonts = {"Arial": FontFace(Path("arial.ttf")), "Arial Bold": FontFace(Path("arialbd.ttf"))}
+        assert suggest_font("ABCDEF+Arial-Bold", fonts) == ("Arial Bold", True)
+        assert suggest_font("Helvetica", fonts) == ("Arial", False)
+        assert suggest_font("", fonts) == (None, False)
+
     def test_find_text_reports_pages_and_boxes(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["Total 100 USD", "Again 100 here"])
         matches = pdf_edit.find_text(source, "100")
@@ -193,6 +266,87 @@ class TestTextEditing:
     def test_find_text_missing_returns_empty(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["nothing here"])
         assert pdf_edit.find_text(source, "absent") == []
+
+    def test_text_lines_return_page_ordered_boxes(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["First line", "Second line"])
+        lines = pdf_edit.text_lines(source, 1)
+        assert len(lines) == 1
+        assert lines[0].text == "First line"
+        assert lines[0].page == 1
+        assert lines[0].width > 0 and lines[0].height > 0
+
+    def test_text_lines_reject_out_of_range_page(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Only page"])
+        with pytest.raises(ConversionError, match="out of range"):
+            pdf_edit.text_lines(source, 2)
+
+    def test_text_lines_reject_rotated_pages(self, tmp_path: Path) -> None:
+        from pypdf import PdfWriter
+
+        source = _make_pdf(tmp_path / "upright.pdf", ["Rotated text"])
+        reader = PdfReader(str(source))
+        reader.pages[0].rotate(90)
+        writer = PdfWriter()
+        writer.add_page(reader.pages[0])
+        rotated = tmp_path / "rotated.pdf"
+        with rotated.open("wb") as handle:
+            writer.write(handle)
+        with pytest.raises(ConversionError, match="upright pages"):
+            pdf_edit.text_lines(rotated, 1)
+
+    def test_text_lines_group_lines_from_top_to_bottom(
+        self, tmp_path: Path
+    ) -> None:
+        from reportlab.pdfgen import canvas
+
+        source = tmp_path / "lines.pdf"
+        pdf = canvas.Canvas(str(source))
+        pdf.drawString(72, 720, "Top line")
+        pdf.drawString(72, 690, "Bottom line")
+        pdf.save()
+        lines = pdf_edit.text_lines(source, 1)
+        assert [line.text for line in lines] == ["Top line", "Bottom line"]
+        assert lines[0].top < lines[1].top
+
+    def test_edit_text_lines_writes_replacement_to_pdf_copy(
+        self, tmp_path: Path
+    ) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Original line"])
+        match = pdf_edit.text_lines(source, 1)[0]
+        out = pdf_edit.edit_text_lines(
+            source, tmp_path / "edited.pdf", [(match, "Corrected")]
+        )
+        text = _page_texts(out)[0]
+        assert "Original line" in text
+        assert "Corrected" in text
+        assert _page_count(out) == _page_count(source)
+
+    def test_edit_text_lines_rejects_replacement_that_will_not_fit(
+        self, tmp_path: Path
+    ) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        match = pdf_edit.text_lines(source, 1)[0]
+        with pytest.raises(ConversionError, match="does not fit"):
+            pdf_edit.edit_text_lines(
+                source, tmp_path / "edited.pdf", [(match, "Much too long " * 20)]
+            )
+
+    def test_edit_text_lines_rejects_multiline_replacement(
+        self, tmp_path: Path
+    ) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        match = pdf_edit.text_lines(source, 1)[0]
+        with pytest.raises(ConversionError, match="one line"):
+            pdf_edit.edit_text_lines(
+                source, tmp_path / "edited.pdf", [(match, "two\nlines")]
+            )
+
+    def test_edit_text_lines_rejects_empty_changes(
+        self, tmp_path: Path
+    ) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Original line"])
+        with pytest.raises(ConversionError, match="no text changes"):
+            pdf_edit.edit_text_lines(source, tmp_path / "edited.pdf", [])
 
     def test_replace_text_covers_and_writes_new(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["Amount: 100 USD"])
@@ -216,5 +370,3 @@ class TestTextEditing:
         source = _make_pdf(tmp_path / "book.pdf", ["A"])
         with pytest.raises(ConversionError, match="no text"):
             pdf_edit.add_text(source, tmp_path / "x.pdf", [])
-
-
