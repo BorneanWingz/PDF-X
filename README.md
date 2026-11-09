@@ -1,6 +1,6 @@
 # PDF-X
 
-**Version 0.1.4**
+**Version 0.1.5**
 
 Portable, offline PDF converter and OCR toolbox for internal team use.
 Build and release notes: [docs/PLAN.md](docs/PLAN.md).
@@ -62,6 +62,40 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 - **No admin rights, no registry writes, no telemetry**: everything lives beside the executable.
 - **Offline by default**: only the optional promo banner check makes a network call, with a
   2-second timeout and silent failure.
+
+## What's new in 0.1.5
+
+- **Scanned tables no longer lose values.** RapidOCR's stock detection reduces
+  any page wider than 2000 px before reading it — which an A4 scan at the default
+  200 DPI exceeds (1654x2338 px), so the page was silently downscaled and words
+  ran together across cell borders (`solids12.450mg perlitre`). Detection now
+  works at 3000 px with a wider box-unclip ratio, which on a degraded A4 test
+  scan went from **85.7% to 100%** of cells and body lines recovered at 200 DPI,
+  and **92.9% to 100%** at 300 DPI, with no change on clean pages. It costs
+  roughly 25% more time per page, which is the right trade for a tool whose job
+  is pulling numbers out of tables. Both values are configurable
+  (`ocr_max_side_len`, `ocr_unclip_ratio` in `config.json`), and
+  `scripts/ocr_benchmark.py` re-measures every candidate on synthetic scans with
+  known ground truth so the defaults stay justified rather than assumed.
+- **Optional larger OCR models.** `scripts\download-ocr-models.ps1` fetches the
+  bigger PP-OCRv4 *server* models into `models\rapidocr` beside the exe, where
+  they are picked up automatically; `-Remove` reverts to the bundled ones. They
+  are Apache-2.0 and stay out of the build on purpose: measured on the same test
+  scan they matched the bundled models' accuracy while taking about **20x longer
+  per page** on CPU (~70 s vs ~4 s), so they are a targeted tool for a document
+  the bundled models cannot read, not an upgrade. A broken or half-copied model
+  set now falls back to the bundled models instead of breaking OCR.
+- **The Edit PDF tab is no longer cut off.** Its "Edit options" block, Apply
+  button and Processing Log button used to be pushed off the bottom of the tab,
+  because the tab's content (639 px) is taller than the window allowed (534 px)
+  and `pack` clips its last children. The tab is now laid out so the sub-tab
+  area is the only part that shrinks, so those controls are always reachable.
+  The window also opens at 900x700 instead of 760x560 for a comfortable import
+  view, with a minimum size that still fits every tab.
+- **Convert File fills its window.** The file list now grows to take the spare
+  height instead of leaving an empty strip under the Processing Log button, and
+  opening that log shrinks the list rather than squeezing the log — the same
+  behaviour the Merge PDF tab already had.
 
 ## What's new in 0.1.4
 
@@ -212,7 +246,7 @@ PDF-X\
   config.json           created on first run
   plugins\              optional converters (see plugins\README.md)
   engines\libreoffice\  LibreOffice engine for Office -> PDF (dictionary packs omitted)
-  models\               optional OCR models
+  models\rapidocr\      optional larger OCR models (see OCR models and tuning)
 ```
 
 The LibreOffice engine is self-contained: `soffice.exe` is resolved from
@@ -228,6 +262,43 @@ Fetch or refresh the engine with `scripts\download-engines.ps1`; it downloads
 the official MSI and performs an administrative install (`msiexec /a`), which
 unpacks the files without touching the registry or Program Files.
 
+### OCR models and tuning
+
+OCR runs on RapidOCR with the bundled PP-OCRv4 *mobile* models (det + rec + cls,
+about 16 MB), which keep the portable build usable on a CPU-only machine. Two
+knobs in `config.json` control detection, and their defaults are measured rather
+than assumed:
+
+| Key | Default | Effect |
+|---|---|---|
+| `ocr_max_side_len` | `3000` | Page size detection works at. Lower is faster but merges text across table cells on A4 scans at 200 DPI. |
+| `ocr_unclip_ratio` | `1.8` | How far each detected text box is expanded. Too low clips glyph edges, too high swallows neighbouring cells. |
+
+Re-measure any change with `uv run python scripts\ocr_benchmark.py`, which scores
+candidates on synthetic scans with known ground truth (it also takes `--dpi` and
+`--dump`). A larger PP-OCRv4 *server* model set can be dropped into
+`models\rapidocr\` beside the exe and is picked up automatically; fetch it with
+`scripts\download-ocr-models.ps1` and revert with `-Remove`. Expect it to be much
+slower on CPU for the same result — it is a fallback for documents the bundled
+models cannot read, not a default. If a detached model set is broken or only
+half-copied, OCR falls back to the bundled models instead of failing.
+
+The models are Apache-2.0 (PaddleOCR, republished at `SWHL/RapidOCR`), so they
+are safe to redistribute; they are downloaded rather than committed only to keep
+the repository and the portable build small.
+
+### LibreOffice redistribution
+
+LibreOffice may be redistributed with PDF-X under its open-source licenses;
+including it does not require relicensing PDF-X. Before publishing a bundle,
+keep LibreOffice's supplied `LICENSE.html`, `license.txt`, `NOTICE`, and other
+component notices intact, and make the corresponding source for the exact
+bundled LibreOffice build available to recipients with instructions for
+obtaining it. LibreOffice includes components under multiple licenses, so do
+not describe the entire runtime as MPL-2.0-only. See the
+[LibreOffice license information](https://www.libreoffice.org/licenses/) and
+[official source-code downloads](https://download.documentfoundation.org/libreoffice/src/).
+
 ## Development
 
 ```powershell
@@ -236,11 +307,18 @@ uv sync --extra dev --extra agpl   # plus AGPL pdf-to-docx plugin support
 uv run pytest
 uv run pdftoolbox --gui
 
-# icon (rerun after replacing assets\pdf-x.jpeg)
+# icon (rerun after replacing assets\pdf-x.png)
 uv run python scripts\make_icon.py
 
 # LibreOffice engine (one-off, ~360 MB download, no admin rights)
 .\scripts\download-engines.ps1
+
+# optional larger OCR models (see "OCR models and tuning" above)
+.\scripts\download-ocr-models.ps1
+.\scripts\download-ocr-models.ps1 -Remove
+
+# re-justify the OCR detection defaults after a RapidOCR or model change
+uv run python scripts\ocr_benchmark.py
 
 .\scripts\build.ps1 -Mode internal   # portable build with AGPL plugin dir
 .\scripts\build.ps1 -Mode clean      # permissive-only build (store distribution)
