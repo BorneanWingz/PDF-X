@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __author__, __version__, plugins
+from .config import load_config
 from .convert import (
     convert,
     convert_many,
@@ -88,6 +89,25 @@ def _cmd_doctor() -> int:
         print("  ok       rapidocr-onnxruntime")
     except ImportError as exc:
         print(f"  MISSING  rapidocr-onnxruntime ({exc})")
+
+    # NOTE: a doctor run must show WHICH models and settings will be used, since
+    # a detached model set silently changing results is exactly the kind of thing
+    # that is impossible to diagnose from the GUI
+    try:
+        from .engines import ocr as ocr_engine
+
+        detached = ocr_engine._configured_model_dir()
+        if detached:
+            print(f"  ok       models: {detached}")
+        else:
+            print("  ok       models: bundled PP-OCRv4 mobile")
+        tuning = ocr_engine.tuning_from_config(load_config())
+        print(
+            f"  ok       tuning: max_side_len={tuning['max_side_len']} "
+            f"unclip_ratio={tuning['det_unclip_ratio']}"
+        )
+    except Exception as exc:  # noqa: BLE001 - doctor must never crash
+        print(f"  warn     OCR state unavailable ({exc})")
 
     print()
     print("[engine] LibreOffice (office -> PDF, MPL-2.0)")

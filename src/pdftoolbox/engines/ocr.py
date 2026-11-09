@@ -1,4 +1,11 @@
-"""Offline OCR using RapidOCR (Apache-2.0, ONNX runtime, bundled models)."""
+"""Offline OCR using RapidOCR (Apache-2.0, ONNX runtime, bundled models).
+
+The bundled models are PP-OCRv4 (det + rec + cls), about 16 MB in total, which
+is what keeps the portable build usable on a CPU-only machine. A larger model
+set can be dropped into ``models/rapidocr`` beside the exe; see
+``scripts\\download-ocr-models.ps1``. Detection tuning lives in ``config.py``
+and is justified by ``scripts/ocr_benchmark.py``.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +25,44 @@ from . import ConversionError, EngineUnavailable
 # so switching models in models/rapidocr invalidates the cache.
 _engine = None
 _engine_dir: str | None = None
+_engine_tuning: tuple | None = None
+# Set when a detached model set could not be loaded and the bundled models were
+# used instead, so the failure is visible rather than silent.
+_fallback_reason: str | None = None
+
+# NOTE: RapidOCR's stock max_side_len=2000 downscales an A4 page rendered at
+# 200 DPI (1654x2338 px) before detection, which merged words across table
+# cells ("solids12.450mg perlitre") and cost whole cells in the XLSX output.
+# Measured with scripts/ocr_benchmark.py on a degraded A4 scan:
+#   200 DPI: 85.7% -> 100% of table/body tokens recovered
+#   300 DPI: 92.9% -> 100% with unclip_ratio=1.8
+#   clean page: unchanged (no regression)
+# The cost is roughly 25% more time per page, which is the right trade for a
+# tool whose whole purpose is pulling values out of tables. Both stay
+# overridable from config for anyone who prefers the old speed.
+DEFAULT_MAX_SIDE_LEN = 3000
+DEFAULT_UNCLIP_RATIO = 1.8
+
+
+def tuning_from_config(config) -> dict:
+    """Detection tuning overrides, with the measured defaults applied.
+
+    NOTE: kept as a small pure helper so the defaults stay testable without
+    building an engine (which needs ONNX models on disk).
+    """
+    config = config or {}
+
+    def _number(key: str, fallback, cast):
+        value = config.get(key, fallback)
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    return {
+        "max_side_len": _number("ocr_max_side_len", DEFAULT_MAX_SIDE_LEN, int),
+        "det_unclip_ratio": _number("ocr_unclip_ratio", DEFAULT_UNCLIP_RATIO, float),
+    }
 
 
 @dataclass
@@ -47,7 +92,12 @@ class OcrPage:
 
 
 def _configured_model_dir() -> str | None:
-    """Optional detached model set: models/rapidocr with det/cls/rec ONNX + keys."""
+    """Optional detached model set: models/rapidocr with det/cls/rec ONNX.
+
+    NOTE: the recogniser's character set is embedded in the ONNX metadata
+    (``character``), so a wholesale swap needs no sidecar keys file. A custom
+    character set is still honoured via ``rec_keys_path`` when present.
+    """
     candidate = models_dir() / "rapidocr"
     if not candidate.is_dir():
         return None
@@ -59,9 +109,22 @@ def _configured_model_dir() -> str | None:
 
 
 def _get_engine():
-    global _engine, _engine_dir
+    global _engine, _engine_dir, _engine_tuning, _fallback_reason
+    from ..config import load_config
+
     model_dir = _configured_model_dir()
-    if _engine is not None and _engine_dir == model_dir:
+    try:
+        tuning = tuning_from_config(load_config())
+    except Exception:  # noqa: BLE001 - a bad config must never block OCR
+        tuning = tuning_from_config({})
+    # NOTE: the tuned values are part of the cache key - editing config.json
+    # must not keep serving an engine built with the previous numbers
+    tuning_key = (tuning["max_side_len"], tuning["det_unclip_ratio"])
+    if (
+        _engine is not None
+        and _engine_dir == model_dir
+        and _engine_tuning == tuning_key
+    ):
         return _engine
     try:
         from rapidocr_onnxruntime import RapidOCR
@@ -69,23 +132,53 @@ def _get_engine():
         raise EngineUnavailable(
             "rapidocr-onnxruntime is not installed; run: uv sync"
         ) from exc
-    kwargs = {}
+
+    # NOTE: tuning goes in first, then a detached model set overrides only the
+    # model paths - so the measured detection defaults survive a model swap
+    kwargs: dict = dict(tuning)
+    fallback = None
     if model_dir:
-        kwargs["det_model_path"] = str(next(Path(model_dir).glob("det*.onnx")))
-        kwargs["rec_model_path"] = str(next(Path(model_dir).glob("rec*.onnx")))
-        cls_candidates = list(Path(model_dir).glob("cls*.onnx"))
+        root = Path(model_dir)
+        kwargs["det_model_path"] = str(next(root.glob("det*.onnx")))
+        kwargs["rec_model_path"] = str(next(root.glob("rec*.onnx")))
+        cls_candidates = list(root.glob("cls*.onnx"))
         if cls_candidates:
             kwargs["cls_model_path"] = str(cls_candidates[0])
-    _engine = RapidOCR(**kwargs)
+        keys = list(root.glob("*.txt"))
+        if keys:
+            # optional sidecar character set for a custom recogniser
+            kwargs["rec_keys_path"] = str(keys[0])
+
+    if model_dir:
+        try:
+            _engine = RapidOCR(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            # NOTE: a half-copied or mismatched detached model set must not take
+            # OCR down with it - fall back to the bundled models and say so
+            fallback = f"{model_dir}: {exc}"
+            kwargs = dict(tuning)
+            _engine = RapidOCR(**kwargs)
+    else:
+        _engine = RapidOCR(**kwargs)
+
+    _fallback_reason = fallback
     _engine_dir = model_dir
+    _engine_tuning = tuning_key
     return _engine
+
+
+def last_fallback_reason() -> str | None:
+    """Why the bundled models were used instead of the detached set, if so."""
+    return _fallback_reason
 
 
 def reset_engine() -> None:
     """Forget the cached engine (used by tests and after model changes)."""
-    global _engine, _engine_dir
+    global _engine, _engine_dir, _engine_tuning, _fallback_reason
     _engine = None
     _engine_dir = None
+    _engine_tuning = None
+    _fallback_reason = None
 
 
 def _parse_result(raw) -> tuple[list[OcrLine], float]:

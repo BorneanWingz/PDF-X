@@ -16,6 +16,15 @@ DEFAULTS: dict[str, Any] = {
     "version": 1,
     "dpi": 150,
     "ocr_dpi": 200,
+    # OCR detection tuning. NOTE: RapidOCR's stock max_side_len=2000 downscales
+    # an A4 page rendered at 200 DPI before detection, which merged text across
+    # table cells and lost values in the XLSX output. Measured on a degraded A4
+    # scan (scripts/ocr_benchmark.py): max_side_len=3000 + unclip_ratio=1.8 takes
+    # token recovery from 85.7% to 100% at 200 DPI and 92.9% to 100% at 300 DPI,
+    # with no change on clean pages, for about 25% more time per page. Lower
+    # them for speed, raise max_side_len for denser pages.
+    "ocr_max_side_len": 3000,
+    "ocr_unclip_ratio": 1.8,
     # same_folder: when True the GUI ignores out_dir and writes beside each
     # input file (convert() interprets out_dir=None that way)
     "same_folder": False,

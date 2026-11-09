@@ -16,6 +16,17 @@ class TestDoctor:
         assert "rapidocr" in out
         assert "plugins" in out
 
+    def test_doctor_reports_ocr_models_and_tuning(self, capsys) -> None:
+        # a detached model set or tuned detection silently changes OCR results,
+        # so a build must be able to show both without opening the window
+        code = main(["--doctor"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "models:" in out
+        assert "tuning:" in out
+        assert "max_side_len=3000" in out
+        assert "unclip_ratio=1.8" in out
+
 
 class TestListTargets:
     def test_pdf_targets(self, text_pdf: Path, capsys) -> None:
