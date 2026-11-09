@@ -80,8 +80,17 @@ class App:
         self.worker: threading.Thread | None = None
 
         root.title(f"PDF-X {__version__}")
-        root.geometry("760x560")
-        root.minsize(680, 480)
+        # NOTE: sized for the tallest tab, not for the eye. The Edit PDF tab
+        # stacks 639 px of content (intro 34 + source row 25 + sub-tab strip 399,
+        # which follows the tallest "Edit Text" pane + "Edit options" 77 + Apply
+        # row 25 + log button 25 + 54 of padding), and the window spends 26 px on
+        # the title bar and notebook strip. At the old 760x560 the tab only had
+        # 534 px, so "Edit options" was cut in half and the Apply row plus the log
+        # button were pushed completely off the bottom of the tab.
+        # minsize keeps 680 px, the smallest height whose tab (654 px) still
+        # clears that content, so resizing cannot bring the clipping back.
+        root.geometry("900x700")
+        root.minsize(820, 680)
         self._apply_window_icon(root)
 
         # Notebook: Convert File, Merge PDF, Edit PDF, and About
@@ -185,7 +194,13 @@ class App:
         ).pack(anchor="w", padx=8, pady=(8, 0))
 
         frame = ttk.LabelFrame(self.convert_tab, text="Files (drop files here)")
-        frame.pack(fill="x", padx=8, pady=(4, 4))
+        # NOTE: fill="both" + expand so the file box is the row that absorbs the
+        # window's spare height, exactly like the Merge PDF list. With fill="x"
+        # only, nothing in this tab could grow, so the old taller-than-needed
+        # window left a dead strip under the Processing Log button, and opening
+        # the log squeezed the log down to 89 px instead of taking room from the
+        # list.
+        frame.pack(fill="both", expand=True, padx=8, pady=(4, 4))
 
         self.file_list = tk.Listbox(frame, height=6, selectmode="extended")
         self.file_list.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
@@ -487,18 +502,31 @@ class App:
             wraplength=700,
             justify="left",
         )
-        intro.pack(anchor="w", padx=8, pady=(8, 6))
+        # NOTE: this tab uses grid rather than pack. With pack, a tab shorter
+        # than the sum of its children's requested heights clips the LAST
+        # children outright: at the old 760x560 window the tab had 534 px but the
+        # content needed 639, so "Edit options" was sheared in half and the
+        # Apply row plus the log button fell off the tab completely. In grid,
+        # rowconfigure(minsize=...) reserves those rows and the middle notebook
+        # row is the one that shrinks instead.
+        intro.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 6))
+        self.edit_tab.columnconfigure(0, weight=1)
 
         source_row = ttk.Frame(self.edit_tab)
-        source_row.pack(fill="x", padx=8, pady=(8, 4))
+        source_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
         self.edit_source_var = tk.StringVar(value="No PDF loaded")
         ttk.Button(source_row, text="Open PDF", command=self.open_edit_pdf).pack(side="left")
         ttk.Label(source_row, textvariable=self.edit_source_var, foreground="#555").pack(
             side="left", padx=8
         )
 
+        # minsize=80 keeps the Organize page list / Edit Text viewer usable; the
+        # sub-notebook is the ONLY row that gives up height when the window is
+        # resized down, so the rows below it never disappear
+        self.edit_tab.rowconfigure(2, weight=1, minsize=80)
+
         self.edit_notebook = ttk.Notebook(self.edit_tab)
-        self.edit_notebook.pack(fill="both", expand=True, padx=8, pady=4)
+        self.edit_notebook.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
         self.organize_tab = ttk.Frame(self.edit_notebook)
         self.split_tab = ttk.Frame(self.edit_notebook)
         self.stamp_tab = ttk.Frame(self.edit_notebook)
@@ -557,7 +585,7 @@ class App:
 
     def _build_edit_output_area(self) -> None:
         frame = ttk.LabelFrame(self.edit_tab, text="Edit options")
-        frame.pack(fill="x", padx=8, pady=4)
+        frame.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
         frame.columnconfigure(3, weight=1)
 
         ttk.Label(frame, text="Output folder:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
@@ -584,7 +612,7 @@ class App:
         self._update_edit_output_state()
 
         action = ttk.Frame(self.edit_tab)
-        action.pack(fill="x", padx=8, pady=4)
+        action.grid(row=4, column=0, sticky="ew", padx=8, pady=4)
         self.edit_apply_button = ttk.Button(
             action, text="Apply Page Changes", command=self.run_organize
         )
@@ -599,13 +627,17 @@ class App:
         self.edit_status_var = tk.StringVar(value="Ready")
         ttk.Label(action, textvariable=self.edit_status_var).pack(side="left")
 
+        # NOTE: the log frame stays pack-managed inside a single gridded row
+        # (the button is gridded at row 5). Hiding the log with grid_remove()
+        # would leave the reserved row visible; pack_forget() inside the row
+        # takes no space, matching the Convert File and Merge PDF behaviour.
         self.edit_log_open = False
         self.edit_log_button = ttk.Button(
             self.edit_tab,
             text="\u25b8 Processing Log",
             command=self._toggle_edit_log,
         )
-        self.edit_log_button.pack(anchor="w", padx=8, pady=(4, 0))
+        self.edit_log_button.grid(row=5, column=0, sticky="w", padx=8, pady=(4, 0))
         log_frame = ttk.LabelFrame(self.edit_tab, text="Processing Log")
         self.edit_log_frame = log_frame
         self.edit_log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
@@ -619,7 +651,10 @@ class App:
             self.edit_log_frame.pack_forget()
             self.edit_log_button.configure(text="\u25b8 Processing Log")
         else:
-            self.edit_log_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+            # NOTE: fill="x", NOT expand: the Edit tab's middle row (the
+            # sub-tab notebook) is the expanding one, so the log grows to its
+            # content height without ever pushing "Edit options" out of bounds
+            self.edit_log_frame.pack(fill="x", padx=8, pady=(2, 8))
             self.edit_log_button.configure(text="\u25be Processing Log")
         self.edit_log_open = not self.edit_log_open
 
