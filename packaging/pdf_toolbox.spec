@@ -12,7 +12,7 @@ ROOT = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
 ENTRY_GUI = os.path.join(SPEC_DIR, "entry_gui.py")
 ENTRY_CLI = os.path.join(SPEC_DIR, "entry_cli.py")
 SRC_DIR = os.path.join(ROOT, "src")
-# NOTE: multi-resolution icon built from assets/pdf-x.jpeg by scripts/make_icon.py
+# NOTE: multi-resolution icon built from assets/pdf-x.png by scripts/make_icon.py
 ICON = os.path.join(ROOT, "assets", "pdf-x.ico")
 mode = os.environ.get("PDFTOOLBOX_BUILD_MODE", "internal")
 is_internal = mode == "internal"

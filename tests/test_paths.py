@@ -22,6 +22,7 @@ class TestIconPath:
         with Image.open(icon) as image:
             assert image.format == "ICO"
             sizes = image.info.get("sizes") or set()
+            assert image.convert("RGBA").getchannel("A").getextrema() == (0, 255)
         # Windows needs at least a small title-bar frame and a large one
         assert (16, 16) in sizes
         assert (256, 256) in sizes
