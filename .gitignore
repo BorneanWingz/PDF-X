@@ -9,6 +9,8 @@ build/
 pytest-run.log
 pytest-err.log
 samples-out/
+# frozen-exe validation scratch (scripts/verify_frozen.py reads it)
+/exe-test/
 # runtime asset folders beside the exe (root-level only, never src packages)
 /engines/
 /models/

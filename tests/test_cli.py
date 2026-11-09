@@ -24,8 +24,8 @@ class TestDoctor:
         assert code == 0
         assert "models:" in out
         assert "tuning:" in out
-        assert "max_side_len=3000" in out
-        assert "unclip_ratio=1.8" in out
+        assert "max_side_len=2000" in out
+        assert "unclip_ratio=1.6" in out
 
 
 class TestListTargets:

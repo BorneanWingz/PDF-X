@@ -31,48 +31,52 @@ def _reset_engine():
 
 
 class TestDetectionTuning:
-    """Detection defaults are measured, not guessed - see scripts/ocr_benchmark.py.
+    """Detection defaults stay at RapidOCR's stock values - see
+    scripts/ocr_benchmark.py.
 
-    Stock RapidOCR downscales an A4 page at 200 DPI and merged table cells; the
-    shipped values were chosen because they recover all of them.
+    That script found the knobs are a genuine trade-off, not a straight win:
+    raising max_side_len above 2000 fixes word spacing on a degraded scan but
+    loses it on a clean render, and the table rebuild reads these lines. With no
+    setting that wins both, the shipped defaults stay put and the knobs are
+    exposed for documents that need them.
     """
 
     def test_defaults_match_the_benchmarked_values(self) -> None:
         assert ocr_engine.tuning_from_config({}) == {
-            "max_side_len": 3000,
-            "det_unclip_ratio": 1.8,
+            "max_side_len": 2000,
+            "det_unclip_ratio": 1.6,
         }
 
     def test_config_overrides_are_used(self) -> None:
         tuning = ocr_engine.tuning_from_config(
-            {"ocr_max_side_len": 4000, "ocr_unclip_ratio": 2.0}
+            {"ocr_max_side_len": 3000, "ocr_unclip_ratio": 2.0}
         )
-        assert tuning == {"max_side_len": 4000, "det_unclip_ratio": 2.0}
+        assert tuning == {"max_side_len": 3000, "det_unclip_ratio": 2.0}
 
     def test_string_numbers_are_coerced(self) -> None:
         # a hand-edited config.json often carries numbers as strings
         tuning = ocr_engine.tuning_from_config(
-            {"ocr_max_side_len": "3500", "ocr_unclip_ratio": "1.5"}
+            {"ocr_max_side_len": "2400", "ocr_unclip_ratio": "1.5"}
         )
-        assert tuning == {"max_side_len": 3500, "det_unclip_ratio": 1.5}
+        assert tuning == {"max_side_len": 2400, "det_unclip_ratio": 1.5}
 
     def test_junk_values_fall_back_to_defaults(self) -> None:
         tuning = ocr_engine.tuning_from_config(
             {"ocr_max_side_len": "wide", "ocr_unclip_ratio": None}
         )
-        assert tuning == {"max_side_len": 3000, "det_unclip_ratio": 1.8}
+        assert tuning == {"max_side_len": 2000, "det_unclip_ratio": 1.6}
 
     def test_missing_config_is_tolerated(self) -> None:
         assert ocr_engine.tuning_from_config(None) == {
-            "max_side_len": 3000,
-            "det_unclip_ratio": 1.8,
+            "max_side_len": 2000,
+            "det_unclip_ratio": 1.6,
         }
 
     def test_engine_receives_the_settings(self) -> None:
         # the pure helper is not enough: the values must reach the detector
         engine = ocr_engine._get_engine()
-        assert engine.max_side_len == 3000
-        assert engine.text_det.postprocess_op.unclip_ratio == 1.8
+        assert engine.max_side_len == 2000
+        assert engine.text_det.postprocess_op.unclip_ratio == 1.6
 
 
 class TestDetachedModelSet:
@@ -110,8 +114,8 @@ class TestDetachedModelSet:
 
         assert engine is not None
         assert ocr_engine.last_fallback_reason() is not None
-        # and the fallback engine still carries the measured tuning
-        assert engine.max_side_len == 3000
+        # and the fallback engine still carries the shipped tuning
+        assert engine.max_side_len == 2000
 
 
 class TestOcrImage:

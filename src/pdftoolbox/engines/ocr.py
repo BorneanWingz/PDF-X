@@ -30,18 +30,20 @@ _engine_tuning: tuple | None = None
 # used instead, so the failure is visible rather than silent.
 _fallback_reason: str | None = None
 
-# NOTE: RapidOCR's stock max_side_len=2000 downscales an A4 page rendered at
-# 200 DPI (1654x2338 px) before detection, which merged words across table
-# cells ("solids12.450mg perlitre") and cost whole cells in the XLSX output.
-# Measured with scripts/ocr_benchmark.py on a degraded A4 scan:
-#   200 DPI: 85.7% -> 100% of table/body tokens recovered
-#   300 DPI: 92.9% -> 100% with unclip_ratio=1.8
-#   clean page: unchanged (no regression)
-# The cost is roughly 25% more time per page, which is the right trade for a
-# tool whose whole purpose is pulling values out of tables. Both stay
-# overridable from config for anyone who prefers the old speed.
-DEFAULT_MAX_SIDE_LEN = 3000
-DEFAULT_UNCLIP_RATIO = 1.8
+# NOTE: detection tuning is exposed because the right numbers depend on the
+# document, but the DEFAULTS STAY AT RAPIDOCR'S STOCK VALUES. Measurement with
+# scripts/ocr_benchmark.py on a generated table scan rendered through the same
+# pypdfium2 path the app uses (see that script for the raw numbers):
+#   max_side_len 2000: 9/9 cells, body line reproduced with its spaces intact
+#   max_side_len 2400+: 9/9 cells, but word spaces are lost on small text
+#                       ("Total dissolved solids12.450mgperlitre"), and the
+#                       higher the limit the worse it gets
+# Word spacing is not cosmetic here: the XLSX/table rebuild reads these lines, so
+# merged words risk merging cells. An earlier revision raised this to 3000 on a
+# synthetic page that did not reproduce the effect; the realistic fixture showed
+# it was a regression, so the stock values are the shipped defaults.
+DEFAULT_MAX_SIDE_LEN = 2000
+DEFAULT_UNCLIP_RATIO = 1.6
 
 
 def tuning_from_config(config) -> dict:

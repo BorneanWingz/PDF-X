@@ -65,18 +65,17 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 
 ## What's new in 0.1.5
 
-- **Scanned tables no longer lose values.** RapidOCR's stock detection reduces
-  any page wider than 2000 px before reading it — which an A4 scan at the default
-  200 DPI exceeds (1654x2338 px), so the page was silently downscaled and words
-  ran together across cell borders (`solids12.450mg perlitre`). Detection now
-  works at 3000 px with a wider box-unclip ratio, which on a degraded A4 test
-  scan went from **85.7% to 100%** of cells and body lines recovered at 200 DPI,
-  and **92.9% to 100%** at 300 DPI, with no change on clean pages. It costs
-  roughly 25% more time per page, which is the right trade for a tool whose job
-  is pulling numbers out of tables. Both values are configurable
-  (`ocr_max_side_len`, `ocr_unclip_ratio` in `config.json`), and
-  `scripts/ocr_benchmark.py` re-measures every candidate on synthetic scans with
-  known ground truth so the defaults stay justified rather than assumed.
+- **OCR detection is now tunable, with the evidence to tune it.** A review of
+  RapidOCR's detection settings found they are a genuine trade-off rather than a
+  clear win: raising `max_side_len` above the default 2000 fixes word spacing on
+  a degraded scan but *loses* it on a clean render (`solids12.450mgperlitre`),
+  and the table rebuild reads those lines. Since no setting wins both, the
+  shipped defaults are unchanged — but `ocr_max_side_len` and
+  `ocr_unclip_ratio` are now honoured from `config.json`, and
+  `scripts/ocr_benchmark.py` scores any combination on generated table scans
+  through the same render path the app uses, treating word spacing as
+  significant. It exists because an earlier attempt to "improve" these defaults
+  scored well on a synthetic page and was measurably worse on a realistic one.
 - **Optional larger OCR models.** `scripts\download-ocr-models.ps1` fetches the
   bigger PP-OCRv4 *server* models into `models\rapidocr` beside the exe, where
   they are picked up automatically; `-Remove` reverts to the bundled ones. They
@@ -266,22 +265,27 @@ unpacks the files without touching the registry or Program Files.
 
 OCR runs on RapidOCR with the bundled PP-OCRv4 *mobile* models (det + rec + cls,
 about 16 MB), which keep the portable build usable on a CPU-only machine. Two
-knobs in `config.json` control detection, and their defaults are measured rather
-than assumed:
+knobs in `config.json` control detection. They default to RapidOCR's own values
+because measurement showed no better value that wins on every input:
 
 | Key | Default | Effect |
 |---|---|---|
-| `ocr_max_side_len` | `3000` | Page size detection works at. Lower is faster but merges text across table cells on A4 scans at 200 DPI. |
-| `ocr_unclip_ratio` | `1.8` | How far each detected text box is expanded. Too low clips glyph edges, too high swallows neighbouring cells. |
+| `ocr_max_side_len` | `2000` | Page size detection works at. Above 2000 detection sees more of a large page and recovers spacing on a degraded scan, but it loses the spaces between words on a clean render. |
+| `ocr_unclip_ratio` | `1.6` | How far each detected text box is expanded. Too low clips glyph edges, too high swallows neighbouring cells. |
 
-Re-measure any change with `uv run python scripts\ocr_benchmark.py`, which scores
-candidates on synthetic scans with known ground truth (it also takes `--dpi` and
-`--dump`). A larger PP-OCRv4 *server* model set can be dropped into
-`models\rapidocr\` beside the exe and is picked up automatically; fetch it with
-`scripts\download-ocr-models.ps1` and revert with `-Remove`. Expect it to be much
-slower on CPU for the same result — it is a fallback for documents the bundled
-models cannot read, not a default. If a detached model set is broken or only
-half-copied, OCR falls back to the bundled models instead of failing.
+Measure any change with `uv run python scripts\ocr_benchmark.py`, which renders
+table scans through the same pypdfium2 path the app uses and scores cells found
+plus whether the body line kept its word spacing (it also takes `--dpi` and
+`--dump`). Treat a lost-space result as a failure: those lines feed the table and
+XLSX rebuild.
+
+A larger PP-OCRv4 *server* model set can be dropped into `models\rapidocr\` beside
+the exe and is picked up automatically; fetch it with
+`scripts\download-ocr-models.ps1` and revert with `-Remove`. Expect much slower
+CPU runs for the same accuracy — measured on the same scan it matched the bundled
+models at roughly 20x the time per page, so it is a fallback for documents the
+bundled models cannot read, not an upgrade. If a detached model set is broken or
+only half-copied, OCR falls back to the bundled models instead of failing.
 
 The models are Apache-2.0 (PaddleOCR, republished at `SWHL/RapidOCR`), so they
 are safe to redistribute; they are downloaded rather than committed only to keep
