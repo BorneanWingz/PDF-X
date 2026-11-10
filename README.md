@@ -51,6 +51,12 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
     **Redo** (or Ctrl+Z and Ctrl+Y in the editor) for text and box changes;
     dragging a box counts as one change. Use **Save Edited Copy** to save both
     added text and queued changes together.
+    The text box is multi-line and scrolls, so a long replacement can be typed
+    and reviewed; the box drawn on the page scrolls with the mouse wheel.
+    Changing the font or the size applies to the selected line straight away,
+    without waiting for the change to be queued.
+    The page preview has a **Zoom** control (50% to 400%, plus **Fit**), and
+    Ctrl+wheel zooms, so a long document can be read without a bigger window.
     Selected TrueType fonts and TrueType collections are embedded in the output;
     unsupported font outlines are reported when saving. This is a line-level overlay:
     it does not reflow paragraphs, and the original characters remain beneath
@@ -96,6 +102,15 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   toolbar under the page list.
 - **Wording follows British English** throughout the interface and the code:
   *Organise Pages*, *bottom-centre*, *colour*.
+- **The Edit Text tab is easier to work with.** The text box is multi-line and
+  scrolls, so a long replacement can be typed and reviewed, and the box drawn
+  on the page scrolls with the mouse wheel. The font and size now apply to the
+  selected line immediately, rather than only when the change is queued. The
+  page preview gained a **Zoom** control (50% to 400%, plus **Fit**), and
+  Ctrl+wheel zooms, so a long document can be read without a bigger window.
+- **The file lists look the same everywhere.** Convert File and Merge PDF now
+  carry their actions in an icon toolbar under the list, the same way the
+  Organise Pages tab does.
 
 ## What's new in 0.1.5
 

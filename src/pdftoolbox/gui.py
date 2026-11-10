@@ -107,6 +107,9 @@ class App:
         self._text_drag_offset: tuple[float, float] | None = None
         self._updating_text_controls = False
         self._placed_images: list = []
+        # NOTE: the page is rendered at 72 dpi, so 100% is its natural size.
+        # Zooming re-renders at a higher dpi, which keeps the text crisp.
+        self._viewer_zoom = 100
         self._text_undo: list[TextEditState] = []
         self._text_redo: list[TextEditState] = []
         self._text_history_current: TextEditState | None = None
@@ -294,6 +297,7 @@ class App:
                 "convert", "merge", "edit", "about",
                 "up", "down", "rotate_left", "rotate_right",
                 "rotate_180", "delete", "reset", "pdf",
+                "folder", "add",
             )
         }
 
@@ -479,20 +483,21 @@ class App:
         scroll.pack(side="left", fill="y", pady=(0, 2))
         self.file_list.configure(yscrollcommand=scroll.set)
 
-        side = ttk.Frame(body, style="Card.TFrame")
-        side.pack(side="left", fill="y", padx=(10, 0))
-        ttk.Button(
-            side, text="Add files", command=self.add_files, style="Card.TButton"
-        ).pack(fill="x", pady=(0, 6))
-        ttk.Button(
-            side, text="Add folder", command=self.add_folder, style="Card.TButton"
-        ).pack(fill="x", pady=6)
-        ttk.Button(
-            side, text="Remove", command=self.remove_selected, style="Card.TButton"
-        ).pack(fill="x", pady=6)
-        ttk.Button(
-            side, text="Clear", command=self.clear_files, style="Card.TButton"
-        ).pack(fill="x", pady=6)
+        # NOTE: the action buttons sit in an icon toolbar under the list, the
+        # same way the Organise Pages tab does it, so the three file lists
+        # read the same way
+        toolbar = tk.Frame(frame, background=theme.SURFACE)
+        toolbar.pack(fill="x", padx=14, pady=(0, 12))
+        actions = (
+            ("Add files", "add", self.add_files),
+            ("Add folder", "folder", self.add_folder),
+            ("Remove", "delete", self.remove_selected),
+            ("Clear", "reset", self.clear_files),
+        )
+        for text, glyph, command in actions:
+            button = theme.toolbar_button(toolbar, text, glyph, self._glyphs)
+            button.pack(side="left", padx=(0, 18))
+            theme.bind_click(button, command)
 
     def _build_options_area(self) -> None:
         frame = theme.card(self.convert_tab)
@@ -722,24 +727,22 @@ class App:
         scroll.pack(side="left", fill="y", pady=(0, 2))
         self.merge_list.configure(yscrollcommand=scroll.set)
 
-        side = ttk.Frame(body, style="Card.TFrame")
-        side.pack(side="left", fill="y", padx=(10, 0))
-        ttk.Button(
-            side, text="Add files", command=self.add_merge_files, style="Card.TButton"
-        ).pack(fill="x", pady=(0, 6))
-        ttk.Button(
-            side, text="Remove", command=self.remove_merge_selected, style="Card.TButton"
-        ).pack(fill="x", pady=6)
-        ttk.Button(
-            side, text="Clear", command=self.clear_merge_files, style="Card.TButton"
-        ).pack(fill="x", pady=6)
-        ttk.Separator(side, orient="horizontal").pack(fill="x", pady=10)
-        ttk.Button(
-            side, text="Move Up", command=self.move_merge_up, style="Card.TButton"
-        ).pack(fill="x", pady=6)
-        ttk.Button(
-            side, text="Move Down", command=self.move_merge_down, style="Card.TButton"
-        ).pack(fill="x", pady=6)
+        # NOTE: the action buttons sit in an icon toolbar under the list, the
+        # same way the Organise Pages tab does it, so the three file lists
+        # read the same way
+        toolbar = tk.Frame(frame, background=theme.SURFACE)
+        toolbar.pack(fill="x", padx=14, pady=(0, 12))
+        actions = (
+            ("Add files", "add", self.add_merge_files),
+            ("Remove", "delete", self.remove_merge_selected),
+            ("Clear", "reset", self.clear_merge_files),
+            ("Move Up", "up", self.move_merge_up),
+            ("Move Down", "down", self.move_merge_down),
+        )
+        for text, glyph, command in actions:
+            button = theme.toolbar_button(toolbar, text, glyph, self._glyphs)
+            button.pack(side="left", padx=(0, 18))
+            theme.bind_click(button, command)
 
         self._build_merge_output_area()
 
@@ -1179,19 +1182,10 @@ class App:
         ).grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 8))
 
     def _build_visual_text_area(self) -> None:
-        ttk.Label(
-            self.visual_text_tab,
-            text=(
-                "Select a line to edit, or add a text box and drag it on the page. "
-                "Visual replacements do not securely remove the original text."
-            ),
-            foreground="#555",
-            wraplength=680,
-            justify="left",
-        ).pack(anchor="w", padx=6, pady=(6, 4))
-
+        # NOTE: the page viewer takes the space, so the explanatory line and the
+        # controls are kept to one row each
         nav = ttk.Frame(self.visual_text_tab)
-        nav.pack(fill="x", padx=6, pady=2)
+        nav.pack(fill="x", padx=6, pady=(4, 2))
         self.visual_text_page_var = tk.StringVar(value="Page 0 of 0")
         self.visual_text_prev = ttk.Button(
             nav, text="Previous", command=lambda: self._navigate_visual_text(-1)
@@ -1233,6 +1227,11 @@ class App:
         self.visual_text_canvas.bind("<Button-1>", self._visual_text_click)
         self.visual_text_canvas.bind("<B1-Motion>", self._drag_placed_text)
         self.visual_text_canvas.bind("<ButtonRelease-1>", self._end_text_drag)
+        # NOTE: the wheel scrolls the page, and Ctrl+wheel zooms, so a long
+        # document can be read without reaching for the scrollbar
+        self.visual_text_canvas.bind("<MouseWheel>", self._on_viewer_wheel)
+        self.visual_text_canvas.bind("<Button-4>", self._on_viewer_wheel)
+        self.visual_text_canvas.bind("<Button-5>", self._on_viewer_wheel)
         self.visual_text_canvas.tag_bind(
             "placed-text-border", "<Enter>", self._on_text_box_border_enter
         )
@@ -1240,15 +1239,47 @@ class App:
             "placed-text-border", "<Leave>", self._on_text_box_border_leave
         )
 
+        # ---- zoom row: keeps the page readable without a bigger window ----
+        zoom_row = ttk.Frame(self.visual_text_tab)
+        zoom_row.pack(fill="x", padx=6, pady=(0, 2))
+        ttk.Label(zoom_row, text="Zoom:").pack(side="left")
+        ttk.Button(
+            zoom_row, text="−", width=3, command=lambda: self._zoom_viewer(-1)
+        ).pack(side="left", padx=(4, 0))
+        self.viewer_zoom_var = tk.StringVar(value="100%")
+        ttk.Label(zoom_row, textvariable=self.viewer_zoom_var, width=6, anchor="center").pack(
+            side="left", padx=4
+        )
+        ttk.Button(
+            zoom_row, text="+", width=3, command=lambda: self._zoom_viewer(1)
+        ).pack(side="left")
+        ttk.Button(
+            zoom_row, text="Fit", command=self._zoom_fit_viewer
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            zoom_row, text="100%", command=lambda: self._set_viewer_zoom(100)
+        ).pack(side="left", padx=4)
+        ttk.Label(
+            zoom_row,
+            text="Ctrl+wheel zooms",
+            foreground="#555",
+        ).pack(side="right", padx=(10, 0))
+
+        # NOTE: the box tools and the font share one row, so the page viewer
+        # keeps the space that two separate rows would have taken from it
         font_row = ttk.Frame(self.visual_text_tab)
-        font_row.pack(fill="x", padx=6, pady=2)
-        ttk.Button(font_row, text="Add Text Box", command=self._add_text_box).pack(side="left")
-        ttk.Button(font_row, text="Remove Box", command=self._remove_text_box).pack(side="left", padx=4)
+        font_row.pack(fill="x", padx=6, pady=(0, 2))
+        ttk.Button(font_row, text="Add Text Box", command=self._add_text_box).pack(
+            side="left"
+        )
+        ttk.Button(font_row, text="Remove Box", command=self._remove_text_box).pack(
+            side="left", padx=4
+        )
         ttk.Label(font_row, text="Font:").pack(side="left", padx=(6, 2))
         default_font = next((name for name in self.system_fonts if name.casefold() == "arial"), "")
         self.text_font_var = tk.StringVar(value=default_font or next(iter(self.system_fonts), ""))
         self.text_font_box = ttk.Combobox(
-            font_row, textvariable=self.text_font_var, values=list(self.system_fonts), width=22
+            font_row, textvariable=self.text_font_var, values=list(self.system_fonts), width=16
         )
         self.text_font_box.pack(side="left")
         ttk.Label(font_row, text="Size:").pack(side="left", padx=(6, 2))
@@ -1258,18 +1289,62 @@ class App:
         )
         self.text_size_box.pack(side="left")
         self.text_font_hint_var = tk.StringVar(value="Choose an installed font.")
-        ttk.Label(self.visual_text_tab, textvariable=self.text_font_hint_var, foreground="#555").pack(anchor="w", padx=6)
+        ttk.Label(
+            font_row, textvariable=self.text_font_hint_var, foreground="#555"
+        ).pack(side="left", padx=(10, 0))
 
         editor = ttk.Frame(self.visual_text_tab)
         editor.pack(fill="x", padx=6, pady=(2, 4))
         ttk.Label(editor, text="Text:").pack(side="left")
         self.visual_text_var = tk.StringVar()
-        self.visual_text_entry = ttk.Entry(editor, textvariable=self.visual_text_var)
-        self.placed_text_entry = tk.Entry(
-            self.visual_text_canvas, textvariable=self.visual_text_var,
-            relief="flat", borderwidth=0,
+        # NOTE: a scrollable multi-line text box, so a long replacement can be
+        # typed and reviewed without the one-line entry hiding the rest.
+        # tk.Text has no textvariable, so the variable and the box are kept in
+        # step by the trace below.
+        self.visual_text_entry = tk.Text(
+            editor,
+            height=3,
+            wrap="word",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
+            background=theme.SURFACE,
+            foreground=theme.INK,
         )
         self.visual_text_entry.pack(side="left", fill="x", expand=True, padx=6)
+        entry_scroll = ttk.Scrollbar(
+            editor, orient="vertical", command=self.visual_text_entry.yview
+        )
+        entry_scroll.pack(side="left", fill="y")
+        self.visual_text_entry.configure(yscrollcommand=entry_scroll.set)
+        # the on-canvas box is a separate widget, so it carries its own text
+        self.placed_text_entry = tk.Text(
+            self.visual_text_canvas,
+            height=1,
+            wrap="word",
+            relief="flat",
+            borderwidth=0,
+            background=theme.SURFACE,
+            foreground=theme.INK,
+        )
+        # NOTE: typing in the on-canvas box updates the item straight away, and
+        # the box scrolls when the text is longer than the box on the page
+        self.placed_text_entry.bind("<<Modified>>", self._on_placed_text_change)
+        self.placed_text_entry.bind(
+            "<MouseWheel>",
+            lambda event: self._scroll_placed_text(event),
+            add="+",
+        )
+        self.placed_text_entry.bind(
+            "<Button-4>",
+            lambda event: self._scroll_placed_text(event),
+            add="+",
+        )
+        self.placed_text_entry.bind(
+            "<Button-5>",
+            lambda event: self._scroll_placed_text(event),
+            add="+",
+        )
         self.visual_text_entry.configure(state="disabled")
         self.visual_text_queue_button = ttk.Button(
             editor,
@@ -1277,8 +1352,13 @@ class App:
             command=self._queue_visual_text_change,
             state="disabled",
         )
-        self.visual_text_queue_button.pack(side="left")
-        for variable in (self.visual_text_var, self.text_font_var, self.add_text_size_var):
+        self.visual_text_queue_button.pack(side="left", padx=(6, 0))
+        # NOTE: the box and the variable are kept in step both ways: typing in
+        # the box updates the variable, and setting the variable (for a
+        # selected line or box) rewrites the box
+        self.visual_text_entry.bind("<<Modified>>", self._on_editor_text_change)
+        self.visual_text_var.trace_add("write", self._on_text_var_change)
+        for variable in (self.text_font_var, self.add_text_size_var):
             variable.trace_add("write", self._update_placed_text)
         for widget in (
             self.visual_text_canvas, self.visual_text_entry, self.placed_text_entry,
@@ -1624,6 +1704,10 @@ class App:
             self.add_text_size_var.set(state.size)
         finally:
             self._updating_text_controls = False
+        # NOTE: the editor box is a Text widget with no textvariable, so it is
+        # rewritten here; the trace that normally keeps it in step is muted
+        # while the state is being restored
+        self._set_editor_text(state.text)
         selected = state.selected_line is not None or state.selected_box is not None
         self.visual_text_entry.configure(state="normal" if selected else "disabled")
         self.visual_text_queue_button.configure(
@@ -1660,6 +1744,11 @@ class App:
             match.text,
         )
 
+    @property
+    def _viewer_scale(self) -> float:
+        """The canvas-to-PDF scale factor, e.g. 1.0 at 100% zoom."""
+        return getattr(self, "_viewer_zoom", 100) / 100.0
+
     def _load_visual_text_page(self) -> None:
         if self.edit_source is None:
             return
@@ -1670,12 +1759,16 @@ class App:
         self.visual_text_image = None
         self.visual_text_canvas.delete("all")
         self.visual_text_status_var.set("Loading page...")
+        # NOTE: the text coordinates come from the PDF at 72 dpi, so a zoomed
+        # page needs them scaled to the rendered size
+        scale = self._viewer_scale
+        dpi = max(36, int(round(72 * scale)))
         try:
             self.visual_text_lines = pdf_edit.text_lines(
                 self.edit_source, self.visual_text_page
             )
             image = pdf_render.render_page_pil(
-                self.edit_source, self.visual_text_page - 1, dpi=72
+                self.edit_source, self.visual_text_page - 1, dpi=dpi
             )
         except (ConversionError, EngineUnavailable) as exc:
             self.visual_text_status_var.set(str(exc))
@@ -1686,7 +1779,12 @@ class App:
             if match.page != self.visual_text_page:
                 continue
             draw.rectangle(
-                (match.x0 - 1, match.top - 1, match.x1 + 1, match.bottom + 1),
+                (
+                    match.x0 * scale - 1,
+                    match.top * scale - 1,
+                    match.x1 * scale + 1,
+                    match.bottom * scale + 1,
+                ),
                 fill="white",
             )
             if replacement:
@@ -1697,12 +1795,23 @@ class App:
                 except OSError as exc:
                     self.visual_text_status_var.set(f"Cannot load font: {exc}")
                     return
-                draw.text((match.x0, match.top + size), replacement, fill="black", font=font, anchor="ls")
+                draw.text(
+                    (match.x0 * scale, match.top * scale + size),
+                    replacement,
+                    fill="black",
+                    font=font,
+                    anchor="ls",
+                )
 
         if self.selected_visual_text is not None:
             selected = self.selected_visual_text
             draw.rectangle(
-                (selected.x0 - 1, selected.top - 1, selected.x1 + 1, selected.bottom + 1),
+                (
+                    selected.x0 * scale - 1,
+                    selected.top * scale - 1,
+                    selected.x1 * scale + 1,
+                    selected.bottom * scale + 1,
+                ),
                 outline="#d00000",
                 width=2,
             )
@@ -1780,9 +1889,14 @@ class App:
         except ValueError:
             messagebox.showerror("PDF-X", "Font size must be between 4 and 200.")
             return
+        # NOTE: the new box is positioned in PDF points, so the canvas position
+        # is scaled back before it is stored
+        scale = self._viewer_scale
         width, height = self.visual_text_image.width(), self.visual_text_image.height()
-        x = max(0, min(width - 1, self.visual_text_canvas.canvasx(20)))
-        top = max(0, min(height - 1, self.visual_text_canvas.canvasy(20)))
+        page_width = width / scale
+        page_height = height / scale
+        x = max(0, min(page_width - 1, self.visual_text_canvas.canvasx(20) / scale))
+        top = max(0, min(page_height - 1, self.visual_text_canvas.canvasy(20) / scale))
         self.placed_text.append(pdf_edit.PlacedText(
             page=self.visual_text_page, text="Text", x=x, top=top,
             font_size=size, font_path=font.path, font_index=font.index,
@@ -1792,7 +1906,7 @@ class App:
         self._record_text_edit()
         self._draw_placed_text()
         self.placed_text_entry.focus_set()
-        self.placed_text_entry.selection_range(0, "end")
+        self._select_all_in_entry(self.placed_text_entry)
 
     def _select_placed_text(self, index: int) -> None:
         item = self.placed_text[index]
@@ -1809,9 +1923,32 @@ class App:
             ))
         finally:
             self._updating_text_controls = False
+        # NOTE: the on-canvas box mirrors the item, so it shows the item's text
+        # as soon as the box is selected
+        self._sync_placed_text_entry(item.text)
         self.visual_text_entry.configure(state="normal")
         self.visual_text_queue_button.configure(state="disabled")
         self.text_font_hint_var.set("Type in the box and drag its border; choose a font above.")
+
+    def _on_placed_text_change(self, _event=None) -> None:
+        """Copy the on-canvas box's text back to the master, then redraw.
+
+        NOTE: the on-canvas box is edited in place, so its content is the
+        source of truth while it has the focus. The change is pushed into the
+        master's variable, which updates the item and the editor box.
+        """
+        if self._updating_text_controls:
+            return
+        if self.selected_placed_text is None:
+            return
+        text = self.placed_text_entry.get("1.0", "end-1c")
+        if text == self.visual_text_var.get():
+            return
+        self.visual_text_var.set(text)
+
+    def _placed_text_content(self) -> str:
+        """The on-canvas box's text, which is the master while it is edited."""
+        return self.placed_text_entry.get("1.0", "end-1c")
 
     def _update_placed_text(self, *_args) -> None:
         index = self.selected_placed_text
@@ -1819,6 +1956,10 @@ class App:
             return
         if index is None:
             if self.selected_visual_text is not None:
+                # NOTE: the font and size also drive the SELECTED PDF line, so
+                # changing either re-renders that line straight away instead of
+                # waiting for the change to be queued
+                self._apply_font_to_selected_line()
                 self._record_text_edit()
             else:
                 self._sync_text_history()
@@ -1828,9 +1969,16 @@ class App:
         except ValueError:
             size = 0
         font = self.system_fonts.get(self.text_font_var.get())
+        # NOTE: the on-canvas box is edited in place, so its content wins when
+        # it holds the focus; otherwise the editor box is the master and its
+        # variable is used. Either way the item ends up with what the user
+        # sees.
+        text = self._placed_text_content()
+        if self.root.focus_get() != self.placed_text_entry:
+            text = self.visual_text_var.get()
         self.placed_text[index] = replace(
             self.placed_text[index],
-            text=self.visual_text_var.get(),
+            text=text,
             font_path=font.path if font else None,
             font_index=font.index if font else 0,
             font_size=size,
@@ -1838,45 +1986,119 @@ class App:
         self._record_text_edit()
         self._draw_placed_text()
 
+    def _apply_font_to_selected_line(self) -> None:
+        """Give the selected PDF line the font and size currently chosen.
+
+        NOTE: the font and the size boxes used to apply only to a NEW text box,
+        so a selected line kept the suggested font until the change was queued.
+        Now both drive the line at once, which is what "the font controls the
+        recognised line" means.
+        """
+        match = self.selected_visual_text
+        if match is None:
+            return
+        key = self._visual_text_key(match)
+        font = self.system_fonts.get(self.text_font_var.get())
+        if font is not None:
+            self.visual_text_fonts[key] = font
+        try:
+            size = int(self.add_text_size_var.get())
+        except ValueError:
+            size = self.visual_text_sizes.get(key, 0)
+        if size:
+            self.visual_text_sizes[key] = size
+        self._load_visual_text_page()
+
+    def _on_viewer_wheel(self, event) -> str:
+        """Scroll the page, or zoom it when Ctrl is held."""
+        if event.state & 0x0004:  # Ctrl
+            self._zoom_viewer(1 if event.delta > 0 else -1)
+            return "break"
+        self.visual_text_canvas.yview_scroll(-1 * (event.delta // 120 or 1), "units")
+        return "break"
+
+    def _zoom_viewer(self, step: int) -> None:
+        """Step the zoom up or down."""
+        self._set_viewer_zoom(getattr(self, "_viewer_zoom", 100) + step * 25)
+
+    def _set_viewer_zoom(self, percent: int) -> None:
+        """Render the page at the given zoom percentage."""
+        percent = max(50, min(400, int(percent)))
+        if percent == self._viewer_zoom:
+            return
+        self._viewer_zoom = percent
+        self.viewer_zoom_var.set(f"{percent}%")
+        self._load_visual_text_page()
+
+    def _zoom_fit_viewer(self) -> None:
+        """Zoom so the whole page fits the viewer.
+
+        NOTE: a page is rendered at 72 dpi, so 100% shows it at its natural
+        size. The fit percentage is the ratio between the viewer's size and
+        the page's, which keeps the whole page on screen without scrolling.
+        """
+        if self.edit_source is None or self.visual_text_image is None:
+            return
+        canvas_width = self.visual_text_canvas.winfo_width()
+        canvas_height = self.visual_text_canvas.winfo_height()
+        if canvas_width <= 1 or canvas_height <= 1:
+            return
+        image_width = self.visual_text_image.width()
+        image_height = self.visual_text_image.height()
+        if image_width <= 1 or image_height <= 1:
+            return
+        scale = min(canvas_width / image_width, canvas_height / image_height)
+        self._set_viewer_zoom(round(scale * 100))
+
     def _draw_placed_text(self) -> None:
         from PIL import Image, ImageDraw, ImageFont, ImageTk
 
         canvas = self.visual_text_canvas
         focus_in_box = self.root.focus_get() == self.placed_text_entry
-        cursor = self.placed_text_entry.index("insert") if focus_in_box else 0
+        cursor = self.placed_text_entry.index("insert") if focus_in_box else "1.0"
         canvas.delete("placed-text")
         self._placed_images = []
+        # NOTE: the item position is in PDF points, but the canvas holds the
+        # zoomed page, so the drawing is scaled up to canvas pixels
+        scale = self._viewer_scale
         for index, item in enumerate(self.placed_text):
             if item.page != self.visual_text_page:
                 continue
+            left = item.x * scale
+            top = item.top * scale
+            font_size = max(4, int(round(item.font_size * scale)))
             if item.font_path is None or not 4 <= item.font_size <= 200:
-                canvas.create_rectangle(item.x, item.top, item.x + 80, item.top + 20,
+                canvas.create_rectangle(left, top, left + 80, top + 20,
                                         outline="red", tags=("placed-text", f"box-{index}"))
                 continue
             try:
-                font = ImageFont.truetype(str(item.font_path), item.font_size, index=item.font_index)
+                font = ImageFont.truetype(str(item.font_path), font_size, index=item.font_index)
             except OSError as exc:
                 self.text_font_hint_var.set(f"Cannot load font: {exc}")
                 continue
             width = max(20, int(font.getlength(item.text)) + 4)
-            height = max(20, int(item.font_size * 1.5))
+            height = max(20, int(font_size * 1.5))
             image = Image.new("RGBA", (width, height))
-            ImageDraw.Draw(image).text((2, item.font_size), item.text, font=font, fill="black", anchor="ls")
+            ImageDraw.Draw(image).text((2, font_size), item.text, font=font, fill="black", anchor="ls")
             photo = ImageTk.PhotoImage(image)
             self._placed_images.append(photo)
             tags = ("placed-text", f"box-{index}")
             if index == self.selected_placed_text:
                 label = next((name for name, face in self.system_fonts.items()
                               if face == FontFace(item.font_path, item.font_index)), "")
-                self.placed_text_entry.configure(font=(label, -item.font_size))
+                self.placed_text_entry.configure(font=(label, -font_size))
+                # NOTE: the on-canvas box is a separate Text widget, so its
+                # content is kept in step by _select_placed_text and by the
+                # <<Modified>> handler; it is NOT rewritten here, or a redraw
+                # would throw away what the user is typing
                 canvas.create_window(
-                    item.x + 4, item.top + 4, window=self.placed_text_entry,
+                    left + 4, top + 4, window=self.placed_text_entry,
                     anchor="nw", width=width, height=height, tags=tags,
                 )
             else:
-                canvas.create_image(item.x, item.top, image=photo, anchor="nw", tags=tags)
+                canvas.create_image(left, top, image=photo, anchor="nw", tags=tags)
             canvas.create_rectangle(
-                item.x, item.top, item.x + width + 8, item.top + height + 8,
+                left, top, left + width + 8, top + height + 8,
                 outline="#d00000" if index == self.selected_placed_text else "#5555cc",
                 dash=(3, 2), tags=(*tags, "placed-text-border"),
             )
@@ -1884,22 +2106,60 @@ class App:
             self.placed_text_entry.focus_set()
             self.placed_text_entry.icursor(cursor)
 
+    def _scroll_placed_text(self, event) -> str:
+        """Scroll the on-canvas text box with the mouse wheel."""
+        try:
+            self.placed_text_entry.yview_scroll(-1 * (event.delta // 120 or 1), "units")
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _sync_placed_text_entry(self, text: str) -> None:
+        """Copy the master's text into the on-canvas box.
+
+        NOTE: the on-canvas box is its own Text widget, so it cannot share the
+        editor's textvariable without fighting over the same content. The
+        editor box is the master; this one mirrors it.
+        """
+        if self.placed_text_entry.get("1.0", "end-1c") == text:
+            return
+        self.placed_text_entry.delete("1.0", "end")
+        self.placed_text_entry.insert("1.0", text)
+
     def _on_text_box_border_enter(self, _event) -> None:
         self.visual_text_canvas.configure(cursor="fleur")
 
     def _on_text_box_border_leave(self, _event) -> None:
         self.visual_text_canvas.configure(cursor="")
 
+    def _viewer_point(self, event) -> tuple[float, float]:
+        """The canvas position of an event, in PDF points (72 dpi).
+
+        NOTE: the canvas holds the ZOOMED page image, so its pixels are larger
+        than the PDF's points. Dividing by the zoom factor gives coordinates
+        that can be compared with the text matches, which are in points.
+        """
+        scale = self._viewer_scale
+        x = self.visual_text_canvas.canvasx(event.x) / scale
+        y = self.visual_text_canvas.canvasy(event.y) / scale
+        return x, y
+
     def _visual_text_click(self, event) -> None:
-        x = self.visual_text_canvas.canvasx(event.x)
-        y = self.visual_text_canvas.canvasy(event.y)
-        for canvas_id in reversed(self.visual_text_canvas.find_overlapping(x, y, x, y)):
+        canvas_x = self.visual_text_canvas.canvasx(event.x)
+        canvas_y = self.visual_text_canvas.canvasy(event.y)
+        for canvas_id in reversed(self.visual_text_canvas.find_overlapping(canvas_x, canvas_y, canvas_x, canvas_y)):
             for tag in self.visual_text_canvas.gettags(canvas_id):
                 if tag.startswith("box-"):
                     index = int(tag[4:])
                     self._select_placed_text(index)
                     item = self.placed_text[index]
-                    self._text_drag_offset = (x - item.x, y - item.top)
+                    # NOTE: the drag offset is in canvas pixels, while the item
+                    # is stored in PDF points, so the item is scaled up here
+                    scale = self._viewer_scale
+                    self._text_drag_offset = (
+                        canvas_x - item.x * scale,
+                        canvas_y - item.top * scale,
+                    )
                     self._load_visual_text_page()
                     self._sync_text_history()
                     return
@@ -1911,12 +2171,17 @@ class App:
         index = self.selected_placed_text
         if index is None or self._text_drag_offset is None or self.visual_text_image is None:
             return
-        x = self.visual_text_canvas.canvasx(event.x) - self._text_drag_offset[0]
-        y = self.visual_text_canvas.canvasy(event.y) - self._text_drag_offset[1]
+        # NOTE: the item position is stored in PDF points, so the drag works
+        # in canvas pixels and is scaled back before it is stored
+        scale = self._viewer_scale
+        x = (self.visual_text_canvas.canvasx(event.x) - self._text_drag_offset[0]) / scale
+        y = (self.visual_text_canvas.canvasy(event.y) - self._text_drag_offset[1]) / scale
+        page_width = self.visual_text_image.width() / scale
+        page_height = self.visual_text_image.height() / scale
         self.placed_text[index] = replace(
             self.placed_text[index],
-            x=max(0, min(self.visual_text_image.width() - 1, x)),
-            top=max(0, min(self.visual_text_image.height() - 1, y)),
+            x=max(0, min(page_width - 1, x)),
+            top=max(0, min(page_height - 1, y)),
         )
         self._draw_placed_text()
 
@@ -1938,11 +2203,67 @@ class App:
         self._record_text_edit()
         self._draw_placed_text()
 
+    def _set_editor_text(self, text: str) -> None:
+        """Put text into the editor box without firing the change handlers.
+
+        NOTE: a disabled Text widget ignores an insert, so the box is enabled
+        for the write and its state is restored afterwards.
+        """
+        state = str(self.visual_text_entry["state"])
+        self._updating_text_controls = True
+        try:
+            self.visual_text_entry.configure(state="normal")
+            self.visual_text_entry.delete("1.0", "end")
+            self.visual_text_entry.insert("1.0", text)
+            # NOTE: the <<Modified>> event is cleared here too, or it fires on
+            # the next idle cycle and would push the box's text back
+            self.visual_text_entry.edit_modified(False)
+            if state != "normal":
+                self.visual_text_entry.configure(state=state)
+        finally:
+            self._updating_text_controls = False
+
+    def _on_editor_text_change(self, _event=None) -> None:
+        """Copy the editor box's text into the master variable."""
+        if self._updating_text_controls:
+            return
+        text = self.visual_text_entry.get("1.0", "end-1c")
+        if text == self.visual_text_var.get():
+            return
+        self.visual_text_var.set(text)
+
+    def _on_text_var_change(self, *_args) -> None:
+        """Rewrite the editor box when the master variable changes.
+
+        NOTE: changing the text records a history step, so undo can bring the
+        draft back after a queued change is undone.
+        """
+        if self._updating_text_controls:
+            return
+        text = self.visual_text_var.get()
+        if self.visual_text_entry.get("1.0", "end-1c") != text:
+            self._set_editor_text(text)
+        # NOTE: the text itself is a history step, so undo walks back through
+        # the drafts as well as the queued changes
+        self._update_placed_text()
+
+    def _select_all_in_entry(self, widget) -> None:
+        """Select the whole content of a text widget.
+
+        NOTE: tk.Text has no selection_range(); it uses a tag instead. The
+        helper keeps the call sites readable and works for both the editor box
+        and the on-canvas box.
+        """
+        try:
+            widget.tag_add("sel", "1.0", "end")
+        except tk.TclError:
+            pass
+
     def _select_visual_text(self, event) -> None:
         if not self.visual_text_lines:
             return
-        x = self.visual_text_canvas.canvasx(event.x)
-        y = self.visual_text_canvas.canvasy(event.y)
+        # NOTE: the matches are in PDF points, so the click must be scaled back
+        x, y = self._viewer_point(event)
 
         def distance(match: pdf_edit.TextMatch) -> float:
             dx = max(match.x0 - x, 0, x - match.x1)
@@ -1977,9 +2298,15 @@ class App:
         finally:
             self._updating_text_controls = False
         self.visual_text_entry.configure(state="normal")
+        # NOTE: the editor box is a Text widget with no textvariable, so it is
+        # filled here; the trace that keeps it in step is muted while the
+        # controls are being set. The box must be enabled first, or a disabled
+        # Text widget ignores the insert.
+        self._set_editor_text(replacement)
+        self.visual_text_entry.configure(state="normal")
         self.visual_text_queue_button.configure(state="normal")
         self.visual_text_entry.focus_set()
-        self.visual_text_entry.selection_range(0, "end")
+        self._select_all_in_entry(self.visual_text_entry)
         self._load_visual_text_page()
         self._sync_text_history()
 

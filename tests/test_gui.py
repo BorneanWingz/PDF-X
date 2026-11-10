@@ -357,21 +357,131 @@ def test_text_editor_shortcuts_dispatch_undo_and_redo(text_editor) -> None:
     assert app.visual_text_var.get() == "Changed"
 
 
-def test_line_font_change_is_queued_and_restored(text_editor) -> None:
+def test_line_font_change_applies_to_the_line_and_is_restored(text_editor) -> None:
     app = text_editor
     line = app.visual_text_lines[0]
     app._select_visual_text(_canvas_event(app, line.x0, line.top))
-    app.text_font_var.set("Test Bold")
-    app._queue_visual_text_change()
     key = app._visual_text_key(line)
+
+    # the font drives the selected line straight away, without queueing
+    app.text_font_var.set("Test Bold")
+    assert app.visual_text_fonts[key] == app.system_fonts["Test Bold"]
+
+    app._queue_visual_text_change()
     assert app.visual_text_fonts[key] == app.system_fonts["Test Bold"]
     app._undo_text_edit()
-    assert key not in app.visual_text_fonts
     app._undo_text_edit()
     assert app.text_font_var.get() == "Test Font"
     app._redo_text_edit()
     app._redo_text_edit()
     assert app.visual_text_fonts[key] == app.system_fonts["Test Bold"]
+
+
+def test_line_size_applies_to_the_line_without_queueing(text_editor) -> None:
+    app = text_editor
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    key = app._visual_text_key(line)
+
+    app.add_text_size_var.set("30")
+    assert app.visual_text_sizes[key] == 30
+
+
+def _text_pdf(tmp_path) -> Path:
+    """A one-page PDF carrying a real text layer."""
+    from reportlab.pdfgen import canvas
+
+    source = tmp_path / "viewer.pdf"
+    pdf = canvas.Canvas(str(source))
+    pdf.drawString(72, 720, "A line of text on the page")
+    pdf.save()
+    return source
+
+
+def test_text_box_is_scrollable_and_multi_line(text_editor) -> None:
+    app = text_editor
+    # the editor box is a multi-line Text widget, so a long replacement can be
+    # typed and reviewed instead of being hidden on one line
+    assert isinstance(app.visual_text_entry, tk.Text)
+    assert int(app.visual_text_entry["height"]) > 1
+    assert app.visual_text_entry["wrap"] == "word"
+
+    # the on-canvas box is a Text widget too, and it scrolls with the wheel
+    assert isinstance(app.placed_text_entry, tk.Text)
+    app._add_text_box()
+    app.placed_text_entry.insert("1.0", "line one\nline two\nline three")
+    app.placed_text_entry.yview_moveto(1.0)
+    assert app.placed_text_entry.yview()[0] > 0, "the box scrolls"
+
+
+def test_editor_box_shows_the_selected_line_text(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    source = _text_pdf(tmp_path)
+    app._reset_edit_session(source, 1)
+    app._load_visual_text_page()
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    assert app.visual_text_entry.get("1.0", "end-1c") == line.text
+
+
+def test_zoom_changes_the_rendered_page(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app._load_visual_text_page()
+    base_width = app.visual_text_image.width()
+
+    app._set_viewer_zoom(200)
+    app._load_visual_text_page()
+    assert app.visual_text_image.width() > base_width, "the page is rendered larger"
+    assert app.viewer_zoom_var.get() == "200%"
+
+    # the zoom is bounded, so the page cannot be scaled away
+    app._set_viewer_zoom(5000)
+    assert app._viewer_zoom == 400
+    app._set_viewer_zoom(1)
+    assert app._viewer_zoom == 50
+
+
+def test_zoom_keeps_the_text_clickable(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app._load_visual_text_page()
+    line = app.visual_text_lines[0]
+    app._set_viewer_zoom(200)
+    app._load_visual_text_page()
+
+    # the click is in canvas pixels, so it is scaled back to PDF points before
+    # the line is matched
+    scale = app._viewer_scale
+    app._select_visual_text(
+        SimpleNamespace(x=int(line.x0 * scale), y=int(line.top * scale))
+    )
+    assert app.selected_visual_text is not None
+    assert app.selected_visual_text.text == line.text
+
+
+def test_file_lists_use_an_icon_toolbar(scratch_app) -> None:
+    app = scratch_app
+
+    def toolbar_labels(widget):
+        """The captions of the icon toolbar under a file list."""
+        labels = []
+
+        def walk(node):
+            for child in node.winfo_children():
+                if isinstance(child, tk.Label):
+                    text = child.cget("text")
+                    if text:
+                        labels.append(text)
+                walk(child)
+
+        walk(widget)
+        return labels
+
+    for tab in (app.convert_tab, app.merge_tab):
+        labels = toolbar_labels(tab)
+        assert "Add files" in labels, labels
+        assert "Clear" in labels, labels
 
 
 def test_line_controls_are_saved_in_pdf(text_editor, tmp_path, monkeypatch) -> None:

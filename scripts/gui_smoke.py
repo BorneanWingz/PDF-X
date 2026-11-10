@@ -208,16 +208,29 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
 
     app._add_text_box()
     assert len(app.placed_text) == 1
-    app.placed_text_entry.delete(0, "end")
-    app.placed_text_entry.insert(0, "Dragged note")
+    # NOTE: the on-canvas box is a tk.Text, so it uses text indices rather
+    # than the character offsets of an Entry. Typing in it updates the item
+    # through the <<Modified>> event, which Tk fires on the next idle cycle.
+    app.placed_text_entry.delete("1.0", "end")
+    app.placed_text_entry.insert("1.0", "Dragged note")
+    app.placed_text_entry.update()
+    root.update()
+    assert app.placed_text[0].text == "Dragged note", app.placed_text[0].text
     assert app.visual_text_canvas.find_withtag("box-0"), "on-page entry is visible"
     item = app.placed_text[0]
-    app._visual_text_click(SimpleNamespace(x=int(item.x + 5), y=int(item.top + 5)))
-    app._drag_placed_text(SimpleNamespace(x=int(item.x + 45), y=int(item.top + 65)))
+    # NOTE: the click lands in CANVAS pixels, so the item position (in PDF
+    # points) is scaled up before it is used
+    canvas_scale = app._viewer_scale
+    app._visual_text_click(SimpleNamespace(
+        x=int(item.x * canvas_scale + 5), y=int(item.top * canvas_scale + 5)
+    ))
+    app._drag_placed_text(SimpleNamespace(
+        x=int(item.x * canvas_scale + 45), y=int(item.top * canvas_scale + 65)
+    ))
     app._end_text_drag(None)
     item = app.placed_text[0]
     assert item.x == 60 and item.top == 80, (item.x, item.top)
-    assert item.text == "Dragged note"
+    assert item.text == "Dragged note", f"text={item.text!r} box={app.placed_text_entry.get('1.0','end-1c')!r} var={app.visual_text_var.get()!r}"
     real_runner = app._run_edit_task_custom
     results = []
     app._run_edit_task_custom = lambda work, _done, _message: results.append(work())
