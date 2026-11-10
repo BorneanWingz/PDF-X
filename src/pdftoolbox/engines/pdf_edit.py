@@ -619,20 +619,17 @@ def replace_text(
     return _write(writer, out_path), len(matches)
 
 
-def edit_text_lines(
+def _text_overlays(
     src: Path,
-    out_path: Path,
     edits: list[tuple[TextMatch, str]],
     font_paths: list[FontFace | None] | None = None,
     additions: list[PlacedText] | None = None,
     font_sizes: list[int] | None = None,
-) -> Path:
-    """Cover selected text lines and draw replacements on a new PDF copy.
+) -> tuple[dict[int, list[PlacedText]], dict[int, list[TextMatch]], PdfReader]:
+    """Build the replacement overlays and the cover boxes for each page.
 
-    Existing PDF text remains beneath the cover boxes, so this is a visual
-    correction rather than secure redaction or content-stream replacement.
-    Explicit font sizes are used as supplied; otherwise replacements are
-    sized to fit their original line.
+    NOTE: shared by edit_text_lines() and apply_edits(), so a line correction
+    and a page reorder can be written in the same pass.
     """
     if not edits and not additions:
         raise ConversionError("no text changes to save")
@@ -697,6 +694,28 @@ def edit_text_lines(
     if any(page < 1 or page > len(reader.pages) for page in set(matches_by_page) | set(replacements)):
         raise ConversionError("a selected text line refers to a missing page")
 
+    return replacements, matches_by_page, reader
+
+
+def edit_text_lines(
+    src: Path,
+    out_path: Path,
+    edits: list[tuple[TextMatch, str]],
+    font_paths: list[FontFace | None] | None = None,
+    additions: list[PlacedText] | None = None,
+    font_sizes: list[int] | None = None,
+) -> Path:
+    """Cover selected text lines and draw replacements on a new PDF copy.
+
+    Existing PDF text remains beneath the cover boxes, so this is a visual
+    correction rather than secure redaction or content-stream replacement.
+    Explicit font sizes are used as supplied; otherwise replacements are
+    sized to fit their original line.
+    """
+    replacements, matches_by_page, reader = _text_overlays(
+        src, edits, font_paths, additions, font_sizes
+    )
+
     writer = PdfWriter()
     for index, source_page in enumerate(reader.pages, start=1):
         page = writer.add_page(source_page)
@@ -718,6 +737,80 @@ def edit_text_lines(
 
 
 def _text_reader(width: float, height: float, items: list[PlacedText]) -> PdfReader:
+    """A one-page reportlab PDF drawing each placed text at its anchor."""
+    from reportlab.lib.colors import Color
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(width, height))
+    for item in items:
+        # reportlab's origin is bottom-left; convert the top-down anchor
+        y = height - item.top - item.font_size
+        pdf.setFillColor(Color(*item.color))
+        font = FontFace(item.font_path, item.font_index) if item.font_path else None
+        pdf.setFont(_register_text_font(font, item.text), item.font_size)
+        pdf.drawString(item.x, y, item.text)
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+    return PdfReader(buffer)
+
+
+def apply_edits(
+    src: Path,
+    out_path: Path,
+    order: list[int] | None = None,
+    rotations: dict[int, int] | None = None,
+    edits: list[tuple[TextMatch, str]] | None = None,
+    font_paths: list[FontFace | None] | None = None,
+    additions: list[PlacedText] | None = None,
+    font_sizes: list[int] | None = None,
+) -> Path:
+    """Apply page changes AND text corrections in ONE new PDF copy.
+
+    NOTE: the page order and the rotations follow the SOURCE page numbers, so a
+    text line that was selected on a page keeps its correction when that page
+    is moved or turned. This is what the Apply button does: one output file
+    carries every change the user made.
+    """
+    edits = list(edits or [])
+    reader = _open_reader(src)
+    count = len(reader.pages)
+    if count == 0:
+        raise ConversionError(f"{src.name} has no pages")
+
+    replacements: dict[int, list[PlacedText]] = {}
+    matches_by_page: dict[int, list[TextMatch]] = {}
+    if edits or additions:
+        replacements, matches_by_page, reader = _text_overlays(
+            src, edits, font_paths, additions, font_sizes
+        )
+
+    sequence = _validate_pages(order, count) if order else list(range(1, count + 1))
+    rotations = rotations or {}
+
+    writer = PdfWriter()
+    for number in sequence:
+        page = reader.pages[number - 1]
+        angle = rotations.get(number, 0) % 360
+        if angle:
+            page.rotate(angle)
+        written = writer.add_page(page)
+        page_matches = matches_by_page.get(number)
+        page_replacements = replacements.get(number, [])
+        if not page_matches and not page_replacements:
+            continue
+        overlay = _replace_reader(
+            float(written.mediabox.width),
+            float(written.mediabox.height),
+            page_matches or [],
+            page_replacements,
+            (1.0, 1.0, 1.0),
+        )
+        written.merge_page(overlay.pages[0])
+
+    _copy_metadata(reader, writer)
+    return _write(writer, out_path)
     """A one-page reportlab PDF drawing each placed text at its anchor."""
     from reportlab.lib.colors import Color
     from reportlab.pdfgen import canvas

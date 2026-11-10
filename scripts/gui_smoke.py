@@ -203,7 +203,8 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
     app.visual_text_var.set("Updated line")
     app._queue_visual_text_change()
     assert len(app.visual_text_edits) == 1, "line replacement queued"
-    assert str(app.visual_text_save_button["state"]) == "normal"
+    # NOTE: there is no separate save button; the Apply button writes the
+    # page changes and the text edits together
     assert app.visual_text_fonts[app._visual_text_key(line)] == app.system_fonts[app.text_font_var.get()]
 
     app._add_text_box()
@@ -235,7 +236,8 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
     results = []
     app._run_edit_task_custom = lambda work, _done, _message: results.append(work())
     try:
-        app._save_visual_text_changes()
+        # NOTE: the Apply button writes the page changes AND the text edits
+        app.run_organise()
     finally:
         app._run_edit_task_custom = real_runner
     from pypdf import PdfReader
@@ -250,7 +252,7 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
     assert app.edit_source is None, "Clear drops the imported source"
     assert app.edit_source_var.get() == "No PDF loaded"
     assert not app.edit_pages and not app.visual_text_lines
-    assert str(app.visual_text_save_button["state"]) == "disabled"
+    assert not hasattr(app, "visual_text_save_button")
     assert str(app.visual_text_next["state"]) == "disabled"
 
     assert App.page_labels([3, 1, 2], {1: 90, 3: 180}) == [

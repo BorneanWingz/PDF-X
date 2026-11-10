@@ -756,11 +756,13 @@ class App:
             text="Merge options",
             style="Card.TLabel",
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 6))
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(8, 2))
 
         ttk.Label(frame, text="Output folder:", style="Card.TLabel").grid(
             row=1, column=0, sticky="w", padx=12, pady=2
         )
+        # NOTE: the same-folder checkbox sits next to the folder field, so the
+        # card needs one row less
         self.merge_out_var = tk.StringVar(value=str(self.config.get("merge_out_dir", "")))
         self.merge_out_entry = ttk.Entry(frame, textvariable=self.merge_out_var)
         self.merge_out_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
@@ -867,6 +869,11 @@ class App:
         # resized down, so the rows below it never disappear
         self.edit_notebook = ttk.Notebook(self.edit_tab)
         self.edit_notebook.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        # NOTE: a notebook is as tall as its TALLEST tab, so the tab row that
+        # holds it asks for that height and the rows below get squeezed. The
+        # notebook is given the room the tab actually has, which is what lets
+        # the document editor fill the space.
+        self.edit_tab.bind("<Configure>", lambda _event: self._schedule_fit())
         self.organise_tab = ttk.Frame(self.edit_notebook)
         self.visual_text_tab = ttk.Frame(self.edit_notebook)
         self.tools_tab = ttk.Frame(self.edit_notebook)
@@ -878,6 +885,46 @@ class App:
         self._build_visual_text_area()
         self._build_pdf_tools_area()
         self._build_edit_output_area()
+
+    def _schedule_fit(self) -> None:
+        """Fit the sub-notebook once the layout has settled.
+
+        NOTE: the fit runs after the event loop goes idle, so the tab already
+        has its final height. Doing it inside the Configure event used the
+        height from before the resize, which was stale.
+        """
+        self.root.after_idle(self._fit_edit_notebook)
+
+    def _fit_edit_notebook(self) -> None:
+        """Give the sub-notebook the room the Edit tab has spare.
+
+        NOTE: a notebook asks for the height of its tallest tab, so the row
+        holding it reserved that space and pushed the rows below - the Apply
+        button and the log - off the bottom of the tab. The notebook is resized
+        to the height the tab actually has, so the document editor fills the
+        space that is really there.
+        """
+        notebook = getattr(self, "edit_notebook", None)
+        tab = getattr(self, "edit_tab", None)
+        if notebook is None or tab is None:
+            return
+        tab_height = tab.winfo_height()
+        if tab_height <= 1:
+            return
+        reserved = 0
+        for child in tab.winfo_children():
+            if child is notebook or not child.winfo_manager():
+                continue
+            if child.grid_info().get("row") == 2:
+                continue
+            reserved += child.winfo_reqheight()
+        target = max(120, tab_height - reserved - 20)
+        if notebook.winfo_height() != target:
+            # NOTE: the notebook computes its own requested height from its
+            # tallest tab, so an explicit height is only honoured when the
+            # notebook stops propagating that request upwards
+            notebook.configure(height=target)
+            notebook.grid_propagate(False)
 
     def _build_organise_area(self) -> None:
         """The drop zone, the page list, and the icon toolbar."""
@@ -1004,28 +1051,29 @@ class App:
             variable=self.edit_same_folder_var,
             command=self._toggle_edit_same_folder,
             style="Card.TCheckbutton",
-        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=(0, 12))
+        ).grid(row=1, column=3, sticky="w", pady=(0, 8))
         self._update_edit_output_state()
 
-        action = theme.card(self.edit_tab)
-        action.grid(row=4, column=0, sticky="ew", pady=(0, 6))
+        # NOTE: the Apply row lives inside the Edit options card, so the tab
+        # has one row fewer and the document editor gets the height back
+        action = frame
         self.edit_apply_button = ttk.Button(
             action,
-            text="Apply Page Changes",
+            text="Apply Changes",
             command=self.run_organise,
             style="Accent.TButton",
         )
-        self.edit_apply_button.pack(side="left", padx=14, pady=12)
+        self.edit_apply_button.grid(row=3, column=0, sticky="w", padx=14, pady=(8, 10))
         ttk.Label(
             action,
-            text="  Saves the reordered / rotated / trimmed pages as a new PDF.",
+            text="  Saves the page changes and the text edits as one new PDF.",
             style="CardMuted.TLabel",
-        ).pack(side="left")
+        ).grid(row=3, column=1, sticky="w", pady=(8, 10))
         self.edit_progress = ttk.Progressbar(action, mode="determinate")
-        self.edit_progress.pack(side="left", fill="x", expand=True, padx=8)
+        self.edit_progress.grid(row=3, column=2, sticky="ew", padx=8, pady=(8, 10))
         self.edit_status_var = tk.StringVar(value="Ready")
-        ttk.Label(action, textvariable=self.edit_status_var, style="Card.TLabel").pack(
-            side="left", padx=(0, 14)
+        ttk.Label(action, textvariable=self.edit_status_var, style="Card.TLabel").grid(
+            row=3, column=3, sticky="e", padx=(8, 14), pady=(8, 10)
         )
 
         # NOTE: the log frame is gridded at row 6, so hiding it with
@@ -1038,7 +1086,7 @@ class App:
             command=self._toggle_edit_log,
             style="Ghost.TButton",
         )
-        self.edit_log_button.grid(row=5, column=0, sticky="w", pady=(0, 4))
+        self.edit_log_button.grid(row=4, column=0, sticky="w", pady=(0, 4))
         log_frame = theme.card(self.edit_tab)
         self.edit_log_frame = log_frame
         self.edit_log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
@@ -1055,7 +1103,7 @@ class App:
             # NOTE: the log lives BELOW the Apply row, so opening it must not
             # push that row out of the tab. The row it occupies is reserved
             # from the start and the notebook gives up the height instead.
-            self.edit_log_frame.grid(row=6, column=0, sticky="ew", pady=(0, 8))
+            self.edit_log_frame.grid(row=5, column=0, sticky="ew", pady=(0, 8))
             self.edit_log_button.configure(text="\u25be Processing Log")
         self.edit_log_open = not self.edit_log_open
 
@@ -1182,10 +1230,21 @@ class App:
         ).grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 8))
 
     def _build_visual_text_area(self) -> None:
-        # NOTE: the page viewer takes the space, so the explanatory line and the
-        # controls are kept to one row each
+        # NOTE: the tab is laid out with GRID, not pack, so the viewer row can
+        # take every spare pixel. With pack the canvas kept its requested
+        # height and the document was squeezed into a short strip.
+        self.visual_text_tab.columnconfigure(0, weight=1)
+        self.visual_text_tab.rowconfigure(2, weight=1)
+
+        viewer = ttk.Frame(self.visual_text_tab)
+        viewer.grid(row=2, column=0, sticky="nsew", padx=6, pady=2)
+        viewer.rowconfigure(0, weight=1)
+        viewer.columnconfigure(0, weight=1)
+
         nav = ttk.Frame(self.visual_text_tab)
-        nav.pack(fill="x", padx=6, pady=(4, 2))
+        nav.grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 2))
+        font_row = ttk.Frame(self.visual_text_tab)
+        font_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 2))
         self.visual_text_page_var = tk.StringVar(value="Page 0 of 0")
         self.visual_text_prev = ttk.Button(
             nav, text="Previous", command=lambda: self._navigate_visual_text(-1)
@@ -1205,12 +1264,11 @@ class App:
         )
         self.text_redo_button.pack(side="left", padx=(4, 0))
 
-        viewer = ttk.Frame(self.visual_text_tab)
-        viewer.pack(fill="both", expand=True, padx=6, pady=4)
-        viewer.rowconfigure(0, weight=1)
-        viewer.columnconfigure(0, weight=1)
+        # NOTE: the canvas asks for a good chunk of height, so the notebook
+        # (which is as tall as its tallest tab) grows to give the document the
+        # room it needs, and the Edit tab's grid hands the slack to it.
         self.visual_text_canvas = tk.Canvas(
-            viewer, background="#e2e7ee", highlightthickness=0, height=100
+            viewer, background="#e2e7ee", highlightthickness=0, height=200
         )
         self.visual_text_canvas.grid(row=0, column=0, sticky="nsew")
         horizontal = ttk.Scrollbar(
@@ -1240,8 +1298,9 @@ class App:
         )
 
         # ---- zoom row: keeps the page readable without a bigger window ----
-        zoom_row = ttk.Frame(self.visual_text_tab)
-        zoom_row.pack(fill="x", padx=6, pady=(0, 2))
+        zoom_row = ttk.Frame(font_row)
+        # NOTE: the zoom controls sit at the far end of the font row
+        zoom_row.pack(side="right")
         ttk.Label(zoom_row, text="Zoom:").pack(side="left")
         ttk.Button(
             zoom_row, text="−", width=3, command=lambda: self._zoom_viewer(-1)
@@ -1256,9 +1315,6 @@ class App:
         ttk.Button(
             zoom_row, text="Fit", command=self._zoom_fit_viewer
         ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            zoom_row, text="100%", command=lambda: self._set_viewer_zoom(100)
-        ).pack(side="left", padx=4)
         ttk.Label(
             zoom_row,
             text="Ctrl+wheel zooms",
@@ -1267,8 +1323,6 @@ class App:
 
         # NOTE: the box tools and the font share one row, so the page viewer
         # keeps the space that two separate rows would have taken from it
-        font_row = ttk.Frame(self.visual_text_tab)
-        font_row.pack(fill="x", padx=6, pady=(0, 2))
         ttk.Button(font_row, text="Add Text Box", command=self._add_text_box).pack(
             side="left"
         )
@@ -1279,7 +1333,7 @@ class App:
         default_font = next((name for name in self.system_fonts if name.casefold() == "arial"), "")
         self.text_font_var = tk.StringVar(value=default_font or next(iter(self.system_fonts), ""))
         self.text_font_box = ttk.Combobox(
-            font_row, textvariable=self.text_font_var, values=list(self.system_fonts), width=16
+            font_row, textvariable=self.text_font_var, values=list(self.system_fonts), width=14
         )
         self.text_font_box.pack(side="left")
         ttk.Label(font_row, text="Size:").pack(side="left", padx=(6, 2))
@@ -1294,7 +1348,7 @@ class App:
         ).pack(side="left", padx=(10, 0))
 
         editor = ttk.Frame(self.visual_text_tab)
-        editor.pack(fill="x", padx=6, pady=(2, 4))
+        editor.grid(row=3, column=0, sticky="ew", padx=6, pady=(2, 2))
         ttk.Label(editor, text="Text:").pack(side="left")
         self.visual_text_var = tk.StringVar()
         # NOTE: a scrollable multi-line text box, so a long replacement can be
@@ -1359,7 +1413,7 @@ class App:
         self.visual_text_entry.bind("<<Modified>>", self._on_editor_text_change)
         self.visual_text_var.trace_add("write", self._on_text_var_change)
         for variable in (self.text_font_var, self.add_text_size_var):
-            variable.trace_add("write", self._update_placed_text)
+            variable.trace_add("write", self._on_style_change)
         for widget in (
             self.visual_text_canvas, self.visual_text_entry, self.placed_text_entry,
             self.text_font_box, self.text_size_box,
@@ -1369,7 +1423,7 @@ class App:
             widget.bind("<Control-Shift-Z>", self._redo_text_edit)
 
         footer = ttk.Frame(self.visual_text_tab)
-        footer.pack(fill="x", padx=6, pady=(0, 6))
+        footer.grid(row=4, column=0, sticky="ew", padx=6, pady=(0, 6))
         self.visual_text_status_var = tk.StringVar(
             value="Open a PDF, then click a text line to select it."
         )
@@ -1378,14 +1432,9 @@ class App:
             textvariable=self.visual_text_status_var,
             foreground="#555",
         ).pack(side="left", fill="x", expand=True)
-        self.visual_text_save_button = ttk.Button(
-            footer,
-            text="Save Edited Copy",
-            command=self._save_visual_text_changes,
-            state="disabled",
-            style="Accent.TButton",
-        )
-        self.visual_text_save_button.pack(side="right")
+        # NOTE: there is no separate save button here. The Apply button in the
+        # Edit options block writes the page changes AND the text corrections
+        # into one new file, so a second save button would only duplicate it.
 
     def _build_replace_area(self, parent: ttk.Frame) -> None:
         repl = theme.card(parent)
@@ -1601,7 +1650,6 @@ class App:
         self.visual_text_var.set("")
         self.visual_text_entry.configure(state="disabled")
         self.visual_text_queue_button.configure(state="disabled")
-        self.visual_text_save_button.configure(state="disabled")
         self._text_undo.clear()
         self._text_redo.clear()
         self._sync_text_history()
@@ -1678,8 +1726,7 @@ class App:
 
     def _sync_text_history(self) -> None:
         self._text_history_current = self._text_edit_state()
-        self.text_undo_button.configure(state="normal" if self._text_undo else "disabled")
-        self.text_redo_button.configure(state="normal" if self._text_redo else "disabled")
+        self._update_history_buttons()
 
     def _record_text_edit(self) -> None:
         current = self._text_edit_state()
@@ -1713,19 +1760,34 @@ class App:
         self.visual_text_queue_button.configure(
             state="normal" if state.selected_line is not None else "disabled"
         )
-        self.visual_text_save_button.configure(
-            state="normal" if state.edits or state.boxes else "disabled"
-        )
         self._load_visual_text_page()
-        self._sync_text_history()
+        # NOTE: the restored state becomes the current one, so the next edit
+        # pushes it onto the undo stack. Without this the stack kept the state
+        # from before the restore, which pushed a duplicate on the next edit.
+        self._text_history_current = self._text_edit_state()
+        self._update_history_buttons()
+
+    def _update_history_buttons(self) -> None:
+        """Enable the Undo and Redo buttons to match the stacks."""
+        self.text_undo_button.configure(state="normal" if self._text_undo else "disabled")
+        self.text_redo_button.configure(state="normal" if self._text_redo else "disabled")
 
     def _undo_text_edit(self, _event=None) -> str:
+        """Step back to the previous state.
+
+        NOTE: the state being left behind is pushed onto the redo stack
+        BEFORE the previous state is restored. Doing it the other way round
+        restored the wrong state, because the restore overwrites the current
+        state - which left redo bringing back a near-identical copy instead
+        of the change the user had just undone.
+        """
         if self._text_undo:
             self._text_redo.append(self._text_edit_state())
             self._restore_text_edit(self._text_undo.pop())
         return "break"
 
     def _redo_text_edit(self, _event=None) -> str:
+        """Step forward to the state that was undone."""
         if self._text_redo:
             self._text_undo.append(self._text_edit_state())
             self._restore_text_edit(self._text_redo.pop())
@@ -1824,6 +1886,11 @@ class App:
         self.visual_text_canvas.configure(
             scrollregion=(0, 0, image.width, image.height)
         )
+        # NOTE: the view starts at the TOP of the page. Without this the
+        # canvas keeps whatever scroll position it had, so a reloaded page
+        # could open in the middle of the document.
+        self.visual_text_canvas.xview_moveto(0.0)
+        self.visual_text_canvas.yview_moveto(0.0)
         self._draw_placed_text()
         self._update_visual_text_nav()
 
@@ -1866,7 +1933,14 @@ class App:
         self.visual_text_page = page
         self.selected_visual_text = None
         self.selected_placed_text = None
-        self.visual_text_var.set("")
+        # NOTE: moving to another page is not an edit, so the history is left
+        # alone. Clearing the text through the variable would otherwise record
+        # a step and push the real edits down the undo stack.
+        self._updating_text_controls = True
+        try:
+            self.visual_text_var.set("")
+        finally:
+            self._updating_text_controls = False
         self.visual_text_entry.configure(state="disabled")
         self.visual_text_queue_button.configure(state="disabled")
         self._load_visual_text_page()
@@ -1902,7 +1976,6 @@ class App:
             font_size=size, font_path=font.path, font_index=font.index,
         ))
         self._select_placed_text(len(self.placed_text) - 1)
-        self.visual_text_save_button.configure(state="normal")
         self._record_text_edit()
         self._draw_placed_text()
         self.placed_text_entry.focus_set()
@@ -1945,12 +2018,23 @@ class App:
         if text == self.visual_text_var.get():
             return
         self.visual_text_var.set(text)
+        # NOTE: the item is updated here, because the box change does not go
+        # through the variable's trace any more
+        self._update_placed_text()
 
     def _placed_text_content(self) -> str:
         """The on-canvas box's text, which is the master while it is edited."""
         return self.placed_text_entry.get("1.0", "end-1c")
 
     def _update_placed_text(self, *_args) -> None:
+        """Apply the current controls to the selected line or box.
+
+        NOTE: this does NOT record a history step. It runs on every keystroke
+        and on every font or size change, so recording here filled the undo
+        stack with near-duplicate states and left redo restoring only a
+        fragment. The history step is taken by the action that started the
+        change instead.
+        """
         index = self.selected_placed_text
         if self._updating_text_controls:
             return
@@ -1960,7 +2044,6 @@ class App:
                 # changing either re-renders that line straight away instead of
                 # waiting for the change to be queued
                 self._apply_font_to_selected_line()
-                self._record_text_edit()
             else:
                 self._sync_text_history()
             return
@@ -1983,7 +2066,6 @@ class App:
             font_index=font.index if font else 0,
             font_size=size,
         )
-        self._record_text_edit()
         self._draw_placed_text()
 
     def _apply_font_to_selected_line(self) -> None:
@@ -2197,9 +2279,6 @@ class App:
         self.placed_text.pop(self.selected_placed_text)
         self.selected_placed_text = None
         self.visual_text_entry.configure(state="disabled")
-        self.visual_text_save_button.configure(
-            state="normal" if self.placed_text or self.visual_text_edits else "disabled"
-        )
         self._record_text_edit()
         self._draw_placed_text()
 
@@ -2223,29 +2302,60 @@ class App:
         finally:
             self._updating_text_controls = False
 
+    def _on_style_change(self, *_args) -> None:
+        """Apply a font or size change to the selection and record it.
+
+        NOTE: the history step is taken here, BEFORE the change is applied, so
+        undo has the previous font and size to restore and redo has the new
+        ones to bring back.
+        """
+        if self._updating_text_controls:
+            return
+        self._record_text_edit()
+        self._update_placed_text()
+
     def _on_editor_text_change(self, _event=None) -> None:
-        """Copy the editor box's text into the master variable."""
+        """Copy the editor box's text into the master variable.
+
+        NOTE: the box is NOT rewritten from the variable here. Doing so would
+        destroy the user's selection, so typing over a Ctrl+A selection would
+        insert at the caret instead of replacing the selected text.
+        """
         if self._updating_text_controls:
             return
         text = self.visual_text_entry.get("1.0", "end-1c")
         if text == self.visual_text_var.get():
             return
-        self.visual_text_var.set(text)
+        # NOTE: the history step is taken BEFORE the change, so undo has the
+        # previous text to restore and redo has the new one to bring back
+        self._record_text_edit()
+        # NOTE: the variable is the master, but the change came FROM the box,
+        # so the box must not be written back
+        self._updating_text_controls = True
+        try:
+            self.visual_text_var.set(text)
+        finally:
+            self._updating_text_controls = False
+        self._update_placed_text()
 
     def _on_text_var_change(self, *_args) -> None:
         """Rewrite the editor box when the master variable changes.
 
-        NOTE: changing the text records a history step, so undo can bring the
-        draft back after a queued change is undone.
+        NOTE: this is the path taken by a selected line, a selected box and an
+        undo, so the box has to follow the variable here.
+
+        The history step is taken BEFORE the change is applied. Recording it
+        afterwards would compare the new state against itself, see no
+        difference and record nothing - which left undo with nothing to undo
+        and redo with nothing to restore.
         """
         if self._updating_text_controls:
             return
         text = self.visual_text_var.get()
-        if self.visual_text_entry.get("1.0", "end-1c") != text:
-            self._set_editor_text(text)
-        # NOTE: the text itself is a history step, so undo walks back through
-        # the drafts as well as the queued changes
-        self._update_placed_text()
+        if self.visual_text_entry.get("1.0", "end-1c") == text:
+            return
+        self._record_text_edit()
+        self._set_editor_text(text)
 
     def _select_all_in_entry(self, widget) -> None:
         """Select the whole content of a text widget.
@@ -2332,44 +2442,10 @@ class App:
         self.visual_text_sizes[key] = size
         self._record_text_edit()
         count = len(self.visual_text_edits)
-        self.visual_text_save_button.configure(
-            state="normal" if count or self.placed_text else "disabled"
-        )
         self._load_visual_text_page()
         self.visual_text_status_var.set(
-            f"{count} pending change(s). Save Edited Copy to write them."
+            f"{count} pending change(s). Apply Changes writes them to a new PDF."
         )
-
-    def _save_visual_text_changes(self) -> None:
-        if not self._edit_ready() or self.edit_source is None:
-            return
-        if not self.visual_text_edits and not self.placed_text:
-            messagebox.showinfo("PDF-X", "Select and queue a text change first.")
-            return
-        source = self.edit_source
-        edits = list(self.visual_text_edits.values())
-        fonts: list[FontFace | None] = [
-            self.visual_text_fonts[key] for key in self.visual_text_edits
-        ]
-        sizes = [self.visual_text_sizes[key] for key in self.visual_text_edits]
-        additions = list(self.placed_text)
-        if any(not item.text.strip() or item.font_path is None or not 4 <= item.font_size <= 200 for item in additions):
-            messagebox.showerror("PDF-X", "Every text box needs text, an installed font, and a size from 4 to 200.")
-            return
-        target = self._edit_output_target(source, "_textedited")
-
-        def work():
-            return pdf_edit.edit_text_lines(
-                source, target, edits, fonts, additions, font_sizes=sizes
-            )
-
-        def _done(path: Path) -> None:
-            self.visual_text_status_var.set(
-                f"Edited copy saved: {path.name}. Original PDF text remains beneath "
-                "the visual corrections."
-            )
-
-        self._run_edit_task_custom(work, _done, "Edited PDF copy saved")
 
     def _refresh_page_list(self, keep_selection: bool = False) -> None:
         selection = self.page_list.curselection() if keep_selection else ()
@@ -2567,14 +2643,6 @@ class App:
     def _set_edit_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
         self.edit_apply_button.configure(state=state)
-        if hasattr(self, "visual_text_save_button"):
-            self.visual_text_save_button.configure(
-                state=(
-                    "disabled"
-                    if busy or not (self.visual_text_edits or self.placed_text)
-                    else "normal"
-                )
-            )
         if not busy:
             self.edit_progress.configure(value=self.edit_progress["maximum"])
 
@@ -2601,18 +2669,60 @@ class App:
         self._set_edit_busy(False)
 
     def run_organise(self) -> None:
+        """Apply every change and write ONE new PDF copy.
+
+        NOTE: this covers the page changes (reorder, rotate, delete) AND the
+        text corrections and added boxes, so the Apply button is the only save
+        the user needs. The text changes follow the SOURCE page numbers, so a
+        correction stays with its page when the page is moved or turned.
+        """
         if not self.edit_pages:
             messagebox.showinfo("PDF-X", "No pages to save.")
+            return
+        if self.edit_source is None:
             return
         src = self.edit_source
         order = list(self.edit_pages)
         rotations = dict(self.edit_rotations)
-        target = self._edit_output_target(src)
+        edits = list(self.visual_text_edits.values())
+        fonts: list[FontFace | None] = [
+            self.visual_text_fonts[key] for key in self.visual_text_edits
+        ]
+        sizes = [self.visual_text_sizes[key] for key in self.visual_text_edits]
+        additions = list(self.placed_text)
+        if any(
+            not item.text.strip() or item.font_path is None or not 4 <= item.font_size <= 200
+            for item in additions
+        ):
+            messagebox.showerror(
+                "PDF-X",
+                "Every text box needs text, an installed font, and a size from 4 to 200.",
+            )
+            return
+        # NOTE: the tag says an edited copy, because the text corrections are
+        # drawn on top of the original text rather than replacing it
+        tag = "_textedited" if (edits or additions) else ""
+        target = self._edit_output_target(src, tag)
 
         def work():
-            return pdf_edit.organise(src, target, order=order, rotations=rotations)
+            return pdf_edit.apply_edits(
+                src,
+                target,
+                order=order,
+                rotations=rotations,
+                edits=edits,
+                font_paths=fonts,
+                additions=additions,
+                font_sizes=sizes,
+            )
 
-        self._run_edit_task(work, "Saved reordered PDF")
+        def _done(path: Path) -> None:
+            self.visual_text_status_var.set(
+                f"Edited copy saved: {path.name}. The original PDF text remains "
+                "beneath the visual corrections."
+            )
+
+        self._run_edit_task_custom(work, _done, "Edited PDF copy saved")
 
     def run_split(self) -> None:
         src = self.edit_source

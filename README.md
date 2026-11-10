@@ -49,8 +49,9 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
     changes, including lines whose wording stays the same. Explicit sizes are
     not automatically reduced to fit the original line. Use **Undo** and
     **Redo** (or Ctrl+Z and Ctrl+Y in the editor) for text and box changes;
-    dragging a box counts as one change. Use **Save Edited Copy** to save both
-    added text and queued changes together.
+    dragging a box counts as one change. **Apply Changes** writes the page
+    changes and the text edits together, as ONE new PDF copy, so there is only
+    one save button to press.
     The text box is multi-line and scrolls, so a long replacement can be typed
     and reviewed; the box drawn on the page scrolls with the mouse wheel.
     Changing the font or the size applies to the selected line straight away,
@@ -111,6 +112,15 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 - **The file lists look the same everywhere.** Convert File and Merge PDF now
   carry their actions in an icon toolbar under the list, the same way the
   Organise Pages tab does.
+- **One save button, and it saves everything.** **Save Edited Copy** is gone:
+  **Apply Changes** now writes the page changes (reorder, rotate, delete) AND
+  the text corrections and added boxes into one new PDF. The corrections follow
+  their source page, so they stay with the page when it is moved or turned.
+- **The document editor has more room and behaves properly.** The page viewer
+  is noticeably taller, the zoom controls moved onto the font row, and the
+  view now opens at the top of the page. Ctrl+A selects the whole text box and
+  typing over it replaces the text, and Redo brings back the whole change
+  rather than a fragment of it.
 
 ## What's new in 0.1.5
 

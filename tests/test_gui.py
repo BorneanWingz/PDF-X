@@ -496,11 +496,15 @@ def test_line_controls_are_saved_in_pdf(text_editor, tmp_path, monkeypatch) -> N
     app.add_text_size_var.set("23")
     app._queue_visual_text_change()
     target = tmp_path / "saved.pdf"
-    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix: target)
+    # the Apply button also needs the page list
+    app.edit_pages = [1]
+    app.edit_rotations = {}
+    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix="": target)
     monkeypatch.setattr(
         app, "_run_edit_task_custom", lambda work, done, title: done(work())
     )
-    app._save_visual_text_changes()
+    # NOTE: the Apply button writes the text edits as well as the page changes
+    app.run_organise()
     reader = PdfReader(str(target))
     operations = ContentStream(reader.pages[0].get_contents(), reader).operations
     assert any(op == b"Tf" and float(args[1]) == 23 for args, op in operations)
@@ -698,7 +702,7 @@ def test_clear_drops_the_imported_file(text_editor) -> None:
     assert "Import PDF" in app.visual_text_status_var.get()
     assert str(app.visual_text_entry["state"]) == "disabled"
     assert str(app.visual_text_queue_button["state"]) == "disabled"
-    assert str(app.visual_text_save_button["state"]) == "disabled"
+    assert not hasattr(app, "visual_text_save_button")
     assert str(app.text_undo_button["state"]) == "disabled"
     assert str(app.text_redo_button["state"]) == "disabled"
     assert str(app.visual_text_prev["state"]) == "disabled"
@@ -706,6 +710,94 @@ def test_clear_drops_the_imported_file(text_editor) -> None:
     assert app.visual_text_page_var.get() == "Page 1 of 0"
     # the reminder belongs to the dropped file, so a later import warns again
     assert not app._visual_text_ocr_warning_shown
+
+
+def test_ctrl_a_replaces_the_selected_text(text_editor) -> None:
+    app = text_editor
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    app.visual_text_entry.focus_force()
+
+    # Ctrl+A selects the whole box, and typing over it replaces the text
+    app.visual_text_entry.event_generate("<Control-a>")
+    app.visual_text_entry.update()
+    selection = app.visual_text_entry.tag_ranges("sel")
+    assert selection, "Ctrl+A selects the text"
+    app.visual_text_entry.delete(selection[0], selection[1])
+    app.visual_text_entry.insert("insert", "Replaced")
+    app.visual_text_entry.update()
+    assert app.visual_text_entry.get("1.0", "end-1c") == "Replaced"
+    assert app.visual_text_var.get() == "Replaced"
+
+
+def test_redo_restores_the_whole_text(text_editor) -> None:
+    app = text_editor
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+
+    app.visual_text_var.set("A much longer replacement")
+    assert app.visual_text_var.get() == "A much longer replacement"
+
+    app._undo_text_edit()
+    assert app.visual_text_var.get() == line.text
+
+    # the redo must bring back the WHOLE text, not a fragment of it
+    app._redo_text_edit()
+    assert app.visual_text_var.get() == "A much longer replacement"
+
+    # and the cycle keeps working, so the stack is not corrupted
+    app._undo_text_edit()
+    assert app.visual_text_var.get() == line.text
+    app._redo_text_edit()
+    assert app.visual_text_var.get() == "A much longer replacement"
+
+
+def test_navigation_does_not_add_an_undo_step(text_editor) -> None:
+    app = text_editor
+    app._add_text_box()
+    depth = len(app._text_undo)
+    app._navigate_visual_text(1)
+    assert len(app._text_undo) == depth, "moving pages is not an edit"
+
+
+def test_apply_button_saves_the_page_changes_and_the_text_edits(
+    scratch_app, tmp_path, monkeypatch
+) -> None:
+    app = scratch_app
+    source = _text_pdf(tmp_path)
+    app._reset_edit_session(source, 1)
+    app._load_visual_text_page()
+
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    app.visual_text_var.set("Updated")
+    app._queue_visual_text_change()
+
+    # a page change as well: rotate the only page
+    app.edit_rotations = {1: 90}
+
+    target = tmp_path / "applied.pdf"
+    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix="": target)
+    monkeypatch.setattr(
+        app, "_run_edit_task_custom", lambda work, done, title: done(work())
+    )
+    app.run_organise()
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(target))
+    assert len(reader.pages) == 1
+    # the rotation was applied
+    assert reader.pages[0].get("/Rotate") == 90
+    # and the text correction was written into the same file
+    assert "Updated" in (reader.pages[0].extract_text() or "")
+
+
+def test_the_save_button_is_gone(scratch_app) -> None:
+    app = scratch_app
+    # NOTE: there is no separate save button; Apply Changes writes everything
+    assert not hasattr(app, "visual_text_save_button")
+    assert str(app.edit_apply_button["text"]) == "Apply Changes"
 
 
 def test_sidebar_navigation_shows_one_page_at_a_time(scratch_app) -> None:
@@ -833,8 +925,12 @@ def test_box_history_drag_remove_and_cross_page(text_editor) -> None:
     assert app.placed_text == [moved]
     app._redo_text_edit()
     assert not app.placed_text
+    # NOTE: undo walks back through the history one action at a time: the
+    # removed box, then its wording, then its size, then the box itself
     app._undo_text_edit()
+    assert app.placed_text
     app._undo_text_edit()
+    assert app.placed_text[0].text == "A note"
     app._undo_text_edit()
     assert app.placed_text[0].font_size == 14
     app._undo_text_edit()
