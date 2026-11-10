@@ -37,29 +37,29 @@ def _page_count(path: Path) -> int:
         doc.close()
 
 
-class TestOrganize:
+class TestOrganise:
     def test_reorders_pages(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["ONE", "TWO", "THREE"])
-        out = pdf_edit.organize(source, tmp_path / "out.pdf", order=[3, 1, 2])
+        out = pdf_edit.organise(source, tmp_path / "out.pdf", order=[3, 1, 2])
         assert _page_texts(out)[0].startswith("THREE")
         assert _page_texts(out)[1].startswith("ONE")
         assert _page_texts(out)[2].startswith("TWO")
 
     def test_delete_is_leaving_pages_out(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["A", "B", "C", "D"])
-        out = pdf_edit.organize(source, tmp_path / "out.pdf", order=[1, 4])
+        out = pdf_edit.organise(source, tmp_path / "out.pdf", order=[1, 4])
         assert _page_count(out) == 2
         assert _page_texts(out)[0].startswith("A")
         assert _page_texts(out)[1].startswith("D")
 
     def test_duplicate_page_appears_twice(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["A", "B"])
-        out = pdf_edit.organize(source, tmp_path / "out.pdf", order=[1, 1, 2])
+        out = pdf_edit.organise(source, tmp_path / "out.pdf", order=[1, 1, 2])
         assert _page_count(out) == 3
 
     def test_rotation_is_baked_in(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["A", "B"])
-        out = pdf_edit.organize(source, tmp_path / "out.pdf", rotations={1: 90})
+        out = pdf_edit.organise(source, tmp_path / "out.pdf", rotations={1: 90})
         reader = PdfReader(str(out))
         assert (reader.pages[0].get("/Rotate") or 0) == 90
         # the untouched page keeps its original orientation
@@ -67,21 +67,21 @@ class TestOrganize:
 
     def test_default_order_keeps_everything(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["A", "B", "C"])
-        out = pdf_edit.organize(source, tmp_path / "out.pdf")
+        out = pdf_edit.organise(source, tmp_path / "out.pdf")
         assert _page_texts(out) == ["A", "B", "C"]
 
     def test_never_overwrites_existing(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["A"])
         target = tmp_path / "out.pdf"
-        first = pdf_edit.organize(source, target)
+        first = pdf_edit.organise(source, target)
         assert first == target
-        second = pdf_edit.organize(source, target)
+        second = pdf_edit.organise(source, target)
         assert second != target and second.name == "out (1).pdf"
 
     def test_empty_selection_is_rejected(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["A"])
         with pytest.raises(ConversionError):
-            pdf_edit.organize(source, tmp_path / "out.pdf", order=[9])
+            pdf_edit.organise(source, tmp_path / "out.pdf", order=[9])
 
 
 class TestSplitExtract:

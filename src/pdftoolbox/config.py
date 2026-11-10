@@ -30,6 +30,9 @@ DEFAULTS: dict[str, Any] = {
     # last_dir: folder of the most recently imported file, so the file
     # dialogs reopen where the user last worked instead of at some default
     "last_dir": "",
+    # recent_files: the last few documents opened, newest first, shown in the
+    # sidebar. Kept short so the list stays a shortcut, not a history viewer.
+    "recent_files": [],
     # merge_out_dir: folder chosen on the Merge PDF tab (blank = same folder)
     "merge_out_dir": "",
     # edit_out_dir: folder chosen on the Edit PDF tab (blank = beside the PDF)

@@ -42,11 +42,18 @@ def main() -> int:
     )
     gui_module.load_config = lambda path=None: real_load(scratch / "config.json")
 
+    # NOTE: the warning popups must not block an automated run, so they are
+    # recorded instead of shown
+    warnings: list[str] = []
+    real_warn = gui_module.messagebox.showwarning
+    gui_module.messagebox.showwarning = lambda title, message, **kw: warnings.append(message)
+
     try:
-        _check(root, app, scratch)
+        _check(root, app, scratch, warnings)
     finally:
         gui_module.save_config = real_save
         gui_module.load_config = real_load
+        gui_module.messagebox.showwarning = real_warn
         root.destroy()
     print("GUI smoke: OK")
     return 0
@@ -60,7 +67,7 @@ def _reportlab_canvas(path: Path):
     return canvas.Canvas(str(path), pagesize=A4)
 
 
-def _check(root: tk.Tk, app: App, scratch: Path) -> None:
+def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
     # targets/labels with no files and with a selected target
     app._refresh_targets()
     app.target_var.set("png")
@@ -88,7 +95,7 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert "merge" not in app.target_box["values"], "merge moved off Convert File"
     assert str(app.pages_entry["state"]) == "normal", "pages live for PDF input"
 
-    assert app.notebook.tab(1, "text") == "Merge PDF", "merge tab present"
+    assert app._pages["merge"] is not None, "merge page present"
     app.merge_files = list(fake_pdfs) + [_Path("notes.docx")]
     app._refresh_merge_list()
     assert app.merge_list.get(0, "end") == (
@@ -113,10 +120,17 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert app.merge_log_open is False
     assert not app.merge_log_frame.winfo_manager(), "collapsed log takes no space"
 
+    # the sidebar drives the navigation, and only one page is shown at a time
+    assert sorted(app._sidebar_rows) == ["about", "convert", "edit", "merge"]
+    app._show_page("merge")
+    root.update_idletasks()
+    assert app.current_page == "merge"
+    assert app.merge_tab.winfo_manager() == "pack", "merge page is shown"
+    assert not app.convert_tab.winfo_manager(), "other pages are hidden"
+
     # Edit PDF groups secondary operations after the visual editor.
-    assert app.notebook.tab(2, "text") == "Edit PDF", "edit tab present"
     assert [app.edit_notebook.tab(i, "text") for i in range(3)] == [
-        "Organize Pages",
+        "Organise Pages",
         "Edit Text",
         "PDF Tools",
     ], "edit sub-tabs"
@@ -134,9 +148,15 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
         "Split PDF", "Extract", "Add Watermark", "Add Numbers", "Find", "Replace All"
     } <= set(button_labels(app.tools_tab))
 
-    root.geometry("820x680")
+    # the Edit PDF tab opens on its empty state, showing the drop zone
+    app._show_page("edit")
+    root.update_idletasks()
+    assert app.organise_drop.winfo_manager() == "pack", "drop zone shows when empty"
+    assert not app.organise_pages.winfo_manager(), "page list waits for a file"
+
+    root.geometry("1180x800")
     root.deiconify()
-    app.notebook.select(app.edit_tab)
+    app._show_page("edit")
     app.edit_notebook.select(app.tools_tab)
     root.update()
 
@@ -159,7 +179,9 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
 
     visual_pdf = scratch / "visual-edit.pdf"
     visual = _reportlab_canvas(visual_pdf)
-    visual.drawString(72, 720, "Select this line")
+    # NOTE: the text must clear the 20-character threshold that marks a PDF as
+    # carrying a text layer, otherwise the OCR reminder would fire
+    visual.drawString(72, 720, "Select this line of text")
     visual.save()
     real_open_dialog = gui_module.filedialog.askopenfilenames
     gui_module.filedialog.askopenfilenames = lambda **_kwargs: [str(visual_pdf)]
@@ -168,11 +190,16 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     finally:
         gui_module.filedialog.askopenfilenames = real_open_dialog
     assert app.visual_text_lines, "selectable PDF text should appear in the viewer"
+    # a PDF with a text layer needs no OCR reminder
+    assert not warnings, "searchable PDF should not warn"
+    # the drop zone makes way for the page list once a file is loaded
+    assert not app.organise_drop.winfo_manager(), "drop zone hides when loaded"
+    assert app.organise_pages.winfo_manager() == "pack", "page list shows"
     line = app.visual_text_lines[0]
     app._select_visual_text(
         SimpleNamespace(x=int(line.x0 + 1), y=int(line.top + 1))
     )
-    assert app.visual_text_var.get() == "Select this line", "clicked line selected"
+    assert app.visual_text_var.get() == "Select this line of text", "clicked line selected"
     app.visual_text_var.set("Updated line")
     app._queue_visual_text_change()
     assert len(app.visual_text_edits) == 1, "line replacement queued"
@@ -257,8 +284,11 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert (16, 16) in sizes, "title-bar size missing"
     assert (32, 32) in sizes, "taskbar size missing"
 
-    # ---------- tab name and the folded Advanced Options block ----------
-    assert app.notebook.tab(0, "text") == "Convert File", "tab renamed"
+    # ---------- page names and the folded Advanced Options block ----------
+    assert sorted(app._pages) == ["about", "convert", "edit", "merge"]
+    app._show_page("convert")
+    root.update_idletasks()
+    assert app.convert_tab.winfo_manager() == "pack", "convert page is shown"
 
     assert app.advanced_open is False, "advanced block starts closed"
     assert not app.advanced_frame.winfo_manager(), "no container while closed"

@@ -101,7 +101,7 @@ def _validate_pages(pages: list[int], count: int) -> list[int]:
     return kept
 
 
-def organize(
+def organise(
     src: Path,
     out_path: Path,
     order: list[int] | None = None,
@@ -236,7 +236,7 @@ def add_page_numbers(
     src: Path,
     out_path: Path,
     pattern: str = "Page {page} of {total}",
-    position: str = "bottom-center",
+    position: str = "bottom-centre",
     font_size: int = 10,
 ) -> Path:
     """Stamp a page number on every page; ``pattern`` may use {page} and {total}."""
@@ -305,7 +305,7 @@ def _number_reader(
     margin = 24
     x = _number_x(position, width)
     y = margin if "bottom" in position else height - margin - font_size
-    if x == "center":
+    if x == "centre":
         pdf.drawCentredString(width / 2.0, y, label)
     else:
         pdf.drawString(x, y, label)
@@ -320,7 +320,7 @@ def _number_x(position: str, width: float):
         return 24
     if "right" in position:
         return width - 24
-    return "center"
+    return "centre"
 
 
 # ---------- text editing (overlay-based) ----------

@@ -32,6 +32,7 @@ from .engines import ConversionError, EngineUnavailable
 from .engines import pdf_edit, pdf_text
 from .paths import icon_path
 from .system_fonts import FontFace, installed_fonts, suggest_font
+from . import theme
 
 
 images_suffixes = [".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", ".gif"]
@@ -49,6 +50,17 @@ def output_undecided(same_folder: bool, out_dir_text: str) -> bool:
     truth for the 'same folder' intent.
     """
     return not same_folder and not out_dir_text.strip()
+
+
+def drop_paths(event) -> list[str]:
+    """The file paths carried by a drag-and-drop event.
+
+    NOTE: a module-level function, so the parsing stays unit-testable without
+    a window and can be shared by every drop target.
+    """
+    if not event.data:
+        return []
+    return list(tk.Tcl().splitlist(event.data))
 
 
 TextKey = tuple[int, float, float, float, float, str]
@@ -111,23 +123,36 @@ class App:
         # button were pushed completely off the bottom of the tab.
         # minsize keeps 680 px, the smallest height whose tab (654 px) still
         # clears that content, so resizing cannot bring the clipping back.
-        root.geometry("900x700")
-        root.minsize(820, 680)
+        root.geometry("1180x800")
+        root.minsize(980, 680)
         self._apply_window_icon(root)
         self._configure_styles(root)
 
-        # Notebook: Convert File, Merge PDF, Edit PDF, and About
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True)
+        # Shell: a dark header with the brand mark, a left sidebar with the
+        # navigation and the recent files, and a content area holding the
+        # pages. The pages are stacked and swapped with pack_forget() rather
+        # than a ttk.Notebook, because the mockup's design has no tab strip.
+        self.shell = tk.Frame(root, background=theme.CANVAS)
+        self.shell.pack(fill="both", expand=True)
+        self.shell.rowconfigure(1, weight=1)
+        self.shell.columnconfigure(1, weight=1)
 
-        self.convert_tab = ttk.Frame(self.notebook)
-        self.merge_tab = ttk.Frame(self.notebook)
-        self.edit_tab = ttk.Frame(self.notebook)
-        self.about_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.convert_tab, text="Convert File")
-        self.notebook.add(self.merge_tab, text="Merge PDF")
-        self.notebook.add(self.edit_tab, text="Edit PDF")
-        self.notebook.add(self.about_tab, text="About")
+        self._build_header()
+        self._build_sidebar()
+
+        self.content = tk.Frame(self.shell, background=theme.CANVAS)
+        self.content.grid(row=1, column=1, sticky="nsew", padx=14, pady=14)
+
+        self.convert_tab = ttk.Frame(self.content)
+        self.merge_tab = ttk.Frame(self.content)
+        self.edit_tab = ttk.Frame(self.content)
+        self.about_tab = ttk.Frame(self.content)
+        self._pages = {
+            "convert": self.convert_tab,
+            "merge": self.merge_tab,
+            "edit": self.edit_tab,
+            "about": self.about_tab,
+        }
 
         self._build_file_area()
         self._build_options_area()
@@ -140,6 +165,10 @@ class App:
 
         self._sync_text_history()
         self._refresh_targets()
+        self._show_page("convert")
+        # NOTE: the Edit PDF tab opens on its empty state, so the drop zone is
+        # showing until a PDF is imported
+        self._show_drop_zone(True)
         # NOTE: the queue + after() poll is the ONLY bridge from worker
         # threads back to Tk - Tk widgets must never be touched off-thread
         self._poll_events()
@@ -210,168 +239,289 @@ class App:
 
     # ---------- layout ----------
 
-    def _configure_styles(self, root: tk.Tk) -> None:
-        """Apply a consistent, dependency-free color palette to the interface."""
-        colors = {
-            "background": "#f3f5f8",
-            "foreground": "#263244",
-            "muted": "#5b6675",
-            "border": "#d4dce6",
-            "surface": "#ffffff",
-            "accent": "#2563eb",
-            "accent_hover": "#1d4ed8",
-            "selection": "#dbeafe",
+    def _build_header(self) -> None:
+        """The dark header bar: brand mark, name, and the tagline."""
+        header = tk.Frame(self.shell, background=theme.HEADER, height=68)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        header.grid_propagate(False)
+        header.grid_columnconfigure(1, weight=1)
+
+        logo = tk.Label(header, background=theme.HEADER, bd=0)
+        mark = self._brand_mark(34)
+        if mark is not None:
+            logo.configure(image=mark)
+        logo.image = mark
+        logo.grid(row=0, column=0, padx=(18, 12), pady=14)
+
+        tk.Label(
+            header,
+            text="PDF-X",
+            background=theme.HEADER,
+            foreground=theme.SURFACE,
+            font=("TkDefaultFont", 18, "bold"),
+        ).grid(row=0, column=1, sticky="w")
+
+        tk.Label(
+            header,
+            text="Portable PDF conversion and OCR",
+            background=theme.HEADER,
+            foreground=theme.HEADER_MUTED,
+            font=("TkDefaultFont", 9),
+        ).grid(row=0, column=2, sticky="e", padx=18)
+
+    def _brand_mark(self, size: int):
+        """The app icon as a header logo, or None when it cannot be loaded."""
+        icon = icon_path()
+        if icon is None:
+            return None
+        try:
+            from PIL import Image, ImageTk
+
+            with Image.open(icon) as source:
+                frame = source.convert("RGBA")
+                frame.thumbnail((size, size), Image.LANCZOS)
+                return theme._keep(
+                    ImageTk.PhotoImage(frame, master=self.root)
+                )
+        except Exception:  # noqa: BLE001 - a missing logo must not block startup
+            return None
+
+    def _build_sidebar(self) -> None:
+        """The left rail: navigation entries plus the recent documents."""
+        self._glyphs = {
+            name: theme.draw_glyph(name, 20, master=self.root)
+            for name in (
+                "convert", "merge", "edit", "about",
+                "up", "down", "rotate_left", "rotate_right",
+                "rotate_180", "delete", "reset", "pdf",
+            )
         }
-        root.configure(background=colors["background"])
-        root.option_add("*Listbox.background", colors["surface"])
-        root.option_add("*Listbox.foreground", colors["foreground"])
-        root.option_add("*Listbox.selectBackground", colors["selection"])
-        root.option_add("*Listbox.selectForeground", colors["foreground"])
-        root.option_add("*Listbox.highlightBackground", colors["border"])
-        root.option_add("*Listbox.highlightColor", colors["accent"])
-        root.option_add("*Listbox.highlightThickness", 1)
-        root.option_add("*Text.background", colors["surface"])
-        root.option_add("*Text.foreground", colors["foreground"])
-        root.option_add("*Text.insertBackground", colors["foreground"])
-        root.option_add("*Text.selectBackground", colors["selection"])
 
-        style = ttk.Style(root)
-        if "clam" in style.theme_names():
-            style.theme_use("clam")
+        sidebar = tk.Frame(self.shell, background=theme.SIDEBAR, width=232)
+        sidebar.grid(row=1, column=0, sticky="nsw", padx=(14, 0), pady=14)
+        sidebar.grid_propagate(False)
+        sidebar.grid_rowconfigure(1, weight=1)
 
-        style.configure(".", font="TkDefaultFont", foreground=colors["foreground"])
-        style.configure("TFrame", background=colors["background"])
-        style.configure("TLabel", background=colors["background"], foreground=colors["foreground"])
-        style.configure("TLabelframe", background=colors["background"], bordercolor=colors["border"])
-        style.configure(
-            "TLabelframe.Label",
-            background=colors["background"],
-            foreground=colors["foreground"],
-            font="TkDefaultFont",
+        nav = tk.Frame(sidebar, background=theme.SIDEBAR)
+        nav.grid(row=0, column=0, sticky="ew")
+
+        self._sidebar_rows = {}
+        entries = (
+            ("convert", "Convert File", "convert"),
+            ("merge", "Merge PDF", "merge"),
+            ("edit", "Edit PDF", "edit"),
+            ("about", "About", "about"),
         )
-        style.configure("TNotebook", background=colors["background"], borderwidth=0)
-        style.configure(
-            "TNotebook.Tab",
-            padding=(10, 3),
-            background="#e8edf3",
-            foreground=colors["muted"],
-        )
-        style.map(
-            "TNotebook.Tab",
-            background=[("selected", colors["background"]), ("active", "#e1e8f0")],
-            foreground=[("selected", colors["accent"])],
-        )
-        style.configure(
-            "TButton",
-            padding=(7, 1),
-            background="#e8edf3",
-            foreground=colors["foreground"],
-            bordercolor=colors["border"],
-        )
-        style.map(
-            "TButton",
-            background=[
-                ("disabled", "#edf0f4"),
-                ("pressed", "#d4deeb"),
-                ("active", "#dce5f0"),
-            ],
-            foreground=[("disabled", "#8a94a3")],
-        )
-        style.configure(
-            "Accent.TButton",
-            background=colors["accent"],
-            foreground=colors["surface"],
-            bordercolor=colors["accent"],
-        )
-        style.map(
-            "Accent.TButton",
-            background=[
-                ("disabled", "#a9bde8"),
-                ("pressed", colors["accent_hover"]),
-                ("active", colors["accent_hover"]),
-            ],
-            foreground=[("disabled", colors["surface"])],
-        )
-        style.configure(
-            "TEntry",
-            fieldbackground=colors["surface"],
-            foreground=colors["foreground"],
-            bordercolor=colors["border"],
-            insertcolor=colors["foreground"],
-        )
-        style.configure(
-            "TCombobox",
-            fieldbackground=colors["surface"],
-            foreground=colors["foreground"],
-            bordercolor=colors["border"],
-            arrowcolor=colors["muted"],
-        )
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", colors["surface"])],
-            foreground=[("readonly", colors["foreground"])],
-        )
-        style.configure(
-            "TSpinbox",
-            fieldbackground=colors["surface"],
-            foreground=colors["foreground"],
-            bordercolor=colors["border"],
-        )
-        style.configure(
-            "TProgressbar",
-            background=colors["accent"],
-            troughcolor="#e2e8f0",
-            bordercolor="#e2e8f0",
-        )
+        for key, text, glyph in entries:
+            row = theme.sidebar_row(nav, text, glyph, self._glyphs)
+            row.pack(fill="x")
+            theme.bind_click(row, lambda k=key: self._show_page(k))
+            self._sidebar_rows[key] = row
+
+        # the recent-files block sits at the bottom of the rail
+        recent = tk.Frame(sidebar, background=theme.SIDEBAR)
+        recent.grid(row=1, column=0, sticky="sew")
+        tk.Label(
+            recent,
+            text="RECENT FILES",
+            background=theme.SIDEBAR,
+            foreground=theme.MUTED,
+            font=("TkDefaultFont", 8, "bold"),
+        ).pack(anchor="w", padx=16, pady=(10, 6))
+        self.recent_list = tk.Frame(recent, background=theme.SIDEBAR)
+        self.recent_list.pack(fill="both", expand=True)
+        self._refresh_recent_files()
+
+    def _show_page(self, key: str) -> None:
+        """Swap the content area to the named page."""
+        for name, page in self._pages.items():
+            if name == key:
+                page.pack(fill="both", expand=True)
+            else:
+                page.pack_forget()
+        for name, row in self._sidebar_rows.items():
+            theme.set_sidebar_active(row, name == key)
+        self.current_page = key
+
+    # ---------- recent files ----------
+
+    def _remember_recent(self, path: Path) -> None:
+        """Record a document in the recent-files list (newest first)."""
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            resolved = str(path)
+        # NOTE: entries are compared by their resolved path, so the same file
+        # cannot appear twice under two spellings of its location
+        kept = []
+        for item in self.config.get("recent_files", []):
+            try:
+                key = str(Path(item).resolve())
+            except OSError:
+                key = str(item)
+            if key != resolved:
+                kept.append(item)
+        kept.insert(0, resolved)
+        self.config["recent_files"] = kept[:8]
+        self._save_settings()
+        self._refresh_recent_files()
+
+    def _refresh_recent_files(self) -> None:
+        """Redraw the recent-files list, hiding entries that vanished."""
+        listing = getattr(self, "recent_list", None)
+        if listing is None:
+            # NOTE: a headless harness may build the editor without the
+            # sidebar, so there is nothing to redraw
+            return
+        for child in listing.winfo_children():
+            child.destroy()
+
+        entries = []
+        seen = set()
+        for item in self.config.get("recent_files", []):
+            candidate = Path(item)
+            if not candidate.is_file():
+                continue
+            # NOTE: the same file can be stored under two spellings (a relative
+            # and a resolved path), so the list is keyed on the resolved path
+            try:
+                key = str(candidate.resolve())
+            except OSError:
+                key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(candidate)
+        # NOTE: the stored list keeps files that were deleted meanwhile, so the
+        # sidebar hides them without losing the user's other shortcuts
+        self.config["recent_files"] = [str(item) for item in entries]
+
+        if not entries:
+            tk.Label(
+                listing,
+                text="No files yet",
+                background=theme.SIDEBAR,
+                foreground=theme.MUTED,
+                font=("TkDefaultFont", 9),
+            ).pack(anchor="w", padx=16)
+            return
+
+        for candidate in entries:
+            row = tk.Frame(listing, background=theme.SIDEBAR, cursor="hand2")
+            icon = tk.Label(
+                row,
+                image=self._glyphs.get("pdf"),
+                background=theme.SIDEBAR,
+                width=16,
+                height=16,
+            )
+            icon.image = self._glyphs.get("pdf")
+            icon.pack(side="left", padx=(16, 0))
+            label = tk.Label(
+                row,
+                text=candidate.name,
+                background=theme.SIDEBAR,
+                foreground=theme.INK,
+                font=("TkDefaultFont", 9),
+                anchor="w",
+            )
+            label.pack(side="left", fill="x", expand=True, padx=(8, 12), pady=4)
+            theme.bind_click(row, lambda p=candidate: self._open_recent(p))
+            row.pack(fill="x")
+
+    def _open_recent(self, path: Path) -> None:
+        """Load a document from the recent list into the Edit PDF tab."""
+        self._show_page("edit")
+        try:
+            count = pdf_edit.page_count(path)
+        except ConversionError as exc:
+            messagebox.showerror("PDF-X", str(exc))
+            return
+        self._reset_edit_session(path, count)
+        self._load_visual_text_page()
+        self._warn_if_not_searchable()
+
+    def _configure_styles(self, root: tk.Tk) -> None:
+        """Apply the brand palette (see the theme module) to the whole tree."""
+        theme.apply_theme(root)
 
     def _build_file_area(self) -> None:
-        ttk.Label(
+        theme.page_header(
             self.convert_tab,
-            text="Convert documents and images between supported formats.",
-            foreground="#555",
-        ).pack(anchor="w", padx=8, pady=(8, 0))
+            "Convert File",
+            "Convert documents and images between supported formats.",
+        ).pack(anchor="w", pady=(0, 10))
 
-        frame = ttk.LabelFrame(self.convert_tab, text="Files (drop files here)")
+        frame = theme.card(self.convert_tab)
         # NOTE: fill="both" + expand so the file box is the row that absorbs the
         # window's spare height, exactly like the Merge PDF list. With fill="x"
         # only, nothing in this tab could grow, so the old taller-than-needed
         # window left a dead strip under the Processing Log button, and opening
         # the log squeezed the log down to 89 px instead of taking room from the
         # list.
-        frame.pack(fill="both", expand=True, padx=8, pady=(4, 4))
+        frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        self.file_list = tk.Listbox(frame, height=6, selectmode="extended")
-        self.file_list.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        ttk.Label(
+            frame,
+            text="Files (drop files here)",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(anchor="w", padx=14, pady=(10, 4))
+
+        body = ttk.Frame(frame, style="Card.TFrame")
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+
+        self.file_list = tk.Listbox(body, height=6, selectmode="extended")
+        self.file_list.pack(side="left", fill="both", expand=True, pady=(0, 2))
         self.file_list.drop_target_register(DND_FILES)
         self.file_list.dnd_bind("<<Drop>>", self._on_file_drop)
-        scroll = ttk.Scrollbar(frame, command=self.file_list.yview)
-        scroll.pack(side="left", fill="y", pady=6)
+        scroll = ttk.Scrollbar(body, command=self.file_list.yview)
+        scroll.pack(side="left", fill="y", pady=(0, 2))
         self.file_list.configure(yscrollcommand=scroll.set)
 
-        side = ttk.Frame(frame)
-        side.pack(side="left", fill="y", padx=6)
-        ttk.Button(side, text="Add files", command=self.add_files).pack(fill="x", pady=(4, 2))
-        ttk.Button(side, text="Add folder", command=self.add_folder).pack(fill="x", pady=2)
-        ttk.Button(side, text="Remove", command=self.remove_selected).pack(fill="x", pady=2)
-        ttk.Button(side, text="Clear", command=self.clear_files).pack(fill="x", pady=(2, 4))
+        side = ttk.Frame(body, style="Card.TFrame")
+        side.pack(side="left", fill="y", padx=(10, 0))
+        ttk.Button(
+            side, text="Add files", command=self.add_files, style="Card.TButton"
+        ).pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            side, text="Add folder", command=self.add_folder, style="Card.TButton"
+        ).pack(fill="x", pady=6)
+        ttk.Button(
+            side, text="Remove", command=self.remove_selected, style="Card.TButton"
+        ).pack(fill="x", pady=6)
+        ttk.Button(
+            side, text="Clear", command=self.clear_files, style="Card.TButton"
+        ).pack(fill="x", pady=6)
 
     def _build_options_area(self) -> None:
-        frame = ttk.LabelFrame(self.convert_tab, text="Conversion options")
-        frame.pack(fill="x", padx=8, pady=4)
+        frame = theme.card(self.convert_tab)
+        frame.pack(fill="x", pady=(0, 10))
         frame.columnconfigure(3, weight=1)
 
-        ttk.Label(frame, text="Convert to:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        ttk.Label(
+            frame,
+            text="Conversion options",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 6))
+
+        ttk.Label(frame, text="Convert to:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=2
+        )
         self.target_var = tk.StringVar()
         self.target_box = ttk.Combobox(
             frame, textvariable=self.target_var, state="readonly", width=22
         )
-        self.target_box.grid(row=0, column=1, sticky="w", padx=6, pady=4)
+        self.target_box.grid(row=1, column=1, sticky="w", pady=4)
         self.target_box.bind("<<ComboboxSelected>>", lambda _e: self._update_option_state())
 
         # ---------- pages ----------
-        ttk.Label(frame, text="Pages:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
-        pages_row = ttk.Frame(frame)
-        pages_row.grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
+        ttk.Label(frame, text="Pages:", style="Card.TLabel").grid(
+            row=2, column=0, sticky="w", padx=12, pady=2
+        )
+        pages_row = ttk.Frame(frame, style="Card.TFrame")
+        pages_row.grid(row=2, column=1, columnspan=3, sticky="ew", pady=4)
         self.pages_var = tk.StringVar()
         self.pages_entry = ttk.Entry(pages_row, textvariable=self.pages_var, width=18)
         self.pages_entry.pack(side="left")
@@ -380,18 +530,22 @@ class App:
         ttk.Label(
             pages_row,
             text="  Blank = All pages \u00b7 Example ranges: 1-3,5 \u00b7 Only for PDF input",
-            foreground="#555",
+            style="CardMuted.TLabel",
         ).pack(side="left")
 
         # ---------- output ----------
-        ttk.Label(frame, text="Output folder:").grid(row=2, column=0, sticky="w", padx=6, pady=4)
+        ttk.Label(frame, text="Output folder:", style="Card.TLabel").grid(
+            row=3, column=0, sticky="w", padx=12, pady=2
+        )
         self.out_var = tk.StringVar(value=str(self.config.get("out_dir", "")))
         # NOTE: entry and button are kept as attributes so the "Output in same
         # folder" checkbox can disable both together
         self.out_entry = ttk.Entry(frame, textvariable=self.out_var)
-        self.out_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
-        self.browse_button = ttk.Button(frame, text="Browse", command=self.pick_output)
-        self.browse_button.grid(row=2, column=3, sticky="e", padx=6, pady=4)
+        self.out_entry.grid(row=3, column=1, columnspan=2, sticky="ew", pady=4)
+        self.browse_button = ttk.Button(
+            frame, text="Browse", command=self.pick_output, style="Card.TButton"
+        )
+        self.browse_button.grid(row=3, column=3, sticky="e", padx=(6, 14), pady=4)
 
         self.same_folder_var = tk.BooleanVar(
             value=bool(self.config.get("same_folder", False))
@@ -401,14 +555,15 @@ class App:
             text="Output in same folder",
             variable=self.same_folder_var,
             command=self._toggle_same_folder,
-        ).grid(row=3, column=1, columnspan=3, sticky="w", padx=6, pady=(0, 4))
+            style="Card.TCheckbutton",
+        ).grid(row=4, column=1, columnspan=3, sticky="w", pady=(0, 4))
         self._update_output_state()
 
         # ---------- advanced (collapsed by default) ----------
-        self._build_advanced_area(frame, row=4)
+        self._build_advanced_area(frame, row=5)
 
-        self.target_note = ttk.Label(frame, text="", foreground="#555")
-        self.target_note.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+        self.target_note = ttk.Label(frame, text="", style="CardMuted.TLabel")
+        self.target_note.grid(row=7, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 8))
 
     def _build_advanced_area(self, parent, row: int) -> None:
         """DPI settings, hidden behind a disclosure toggle until needed.
@@ -422,15 +577,16 @@ class App:
             text="\u25b8 Advanced Options",
             width=20,
             command=self._toggle_advanced,
+            style="Card.TButton",
         )
-        self.advanced_button.grid(row=row, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 4))
+        self.advanced_button.grid(row=row, column=0, columnspan=2, sticky="w", padx=14, pady=(2, 8))
 
         # NOTE: never gridded until opened - grid_remove() alone still reserves
         # the row, which would leave an empty gap in the collapsed state
-        self.advanced_frame = ttk.Frame(parent)
+        self.advanced_frame = ttk.Frame(parent, style="Card.TFrame")
         self.advanced_frame.columnconfigure(5, weight=1)
 
-        ttk.Label(self.advanced_frame, text="Image DPI:").grid(
+        ttk.Label(self.advanced_frame, text="Image DPI:", style="Card.TLabel").grid(
             row=0, column=0, sticky="w", pady=2
         )
         self.dpi_var = tk.StringVar(value=str(self.config.get("dpi", 150)))
@@ -440,20 +596,20 @@ class App:
         ttk.Label(
             self.advanced_frame,
             text="  Resolution for PNG / JPG / TIF / PPTX output",
-            foreground="#555",
+            style="CardMuted.TLabel",
         ).grid(row=0, column=2, sticky="w", pady=2)
 
-        ttk.Label(self.advanced_frame, text="OCR DPI:").grid(
+        ttk.Label(self.advanced_frame, text="OCR DPI:", style="Card.TLabel").grid(
             row=1, column=0, sticky="w", pady=2
         )
         self.ocr_dpi_var = tk.StringVar(value=str(self.config.get("ocr_dpi", 200)))
         ttk.Spinbox(
             self.advanced_frame, from_=100, to=600, width=6, textvariable=self.ocr_dpi_var
-        ).grid(row=1, column=1, sticky="w", padx=(4, 0), pady=2)
+        ).grid(row=1, column=1, sticky="w", padx=(4, 0), pady=1)
         ttk.Label(
             self.advanced_frame,
             text="  Resolution used when OCR reads a scanned page",
-            foreground="#555",
+            style="CardMuted.TLabel",
         ).grid(row=1, column=2, sticky="w", pady=2)
 
     def _toggle_advanced(self) -> None:
@@ -461,21 +617,23 @@ class App:
             self.advanced_frame.grid_remove()
             self.advanced_button.configure(text="\u25b8 Advanced Options")
         else:
-            self.advanced_frame.grid(row=5, column=0, columnspan=4, sticky="ew", padx=6, pady=(0, 4))
+            self.advanced_frame.grid(row=6, column=0, columnspan=4, sticky="ew", padx=14, pady=(0, 4))
             self.advanced_button.configure(text="\u25be Advanced Options")
         self.advanced_open = not self.advanced_open
 
     def _build_action_area(self) -> None:
-        frame = ttk.Frame(self.convert_tab)
-        frame.pack(fill="x", padx=8, pady=4)
+        frame = theme.card(self.convert_tab)
+        frame.pack(fill="x", pady=(0, 10))
         self.convert_button = ttk.Button(
             frame, text="Convert", command=self.start_convert, style="Accent.TButton"
         )
-        self.convert_button.pack(side="left")
+        self.convert_button.pack(side="left", padx=14, pady=12)
         self.progress = ttk.Progressbar(frame, mode="determinate")
         self.progress.pack(side="left", fill="x", expand=True, padx=8)
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(frame, textvariable=self.status_var).pack(side="left")
+        ttk.Label(frame, textvariable=self.status_var, style="Card.TLabel").pack(
+            side="left", padx=(0, 14)
+        )
 
     def _build_log_area(self) -> None:
         self.log_open = False
@@ -483,14 +641,15 @@ class App:
             self.convert_tab,
             text="\u25b8 Processing Log",
             command=self._toggle_log,
+            style="Ghost.TButton",
         )
-        self.log_button.pack(anchor="w", padx=8, pady=(4, 0))
-        frame = ttk.LabelFrame(self.convert_tab, text="Processing Log")
+        self.log_button.pack(anchor="w", pady=(0, 6))
+        frame = theme.card(self.convert_tab)
         self.log_frame = frame
         self.log = tk.Text(frame, height=10, wrap="word", state="disabled")
-        self.log.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.log.pack(side="left", fill="both", expand=True, padx=14, pady=12)
         scroll = ttk.Scrollbar(frame, command=self.log.yview)
-        scroll.pack(side="left", fill="y", pady=6)
+        scroll.pack(side="left", fill="y", pady=12)
         self.log.configure(yscrollcommand=scroll.set)
 
     def _toggle_log(self) -> None:
@@ -498,12 +657,20 @@ class App:
             self.log_frame.pack_forget()
             self.log_button.configure(text="\u25b8 Processing Log")
         else:
-            self.log_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+            self.log_frame.pack(fill="both", expand=True, pady=(0, 8))
             self.log_button.configure(text="\u25be Processing Log")
         self.log_open = not self.log_open
 
     def _build_promo_area(self) -> None:
-        self.promo_label = tk.Label(self.convert_tab, text="", anchor="w", fg="#0a58ca", cursor="hand2")
+        self.promo_label = tk.Label(
+            self.convert_tab,
+            text="",
+            anchor="w",
+            fg=theme.ACCENT,
+            background=theme.CANVAS,
+            cursor="hand2",
+        )
+        self.promo_label.pack(anchor="w", pady=(0, 4))
         self.promo_label.bind("<Button-1>", self._open_promo_url)
         self._promo_url = ""
         promo_conf = self.config.get("promo", {})
@@ -522,23 +689,28 @@ class App:
         the parts are concatenated in list order - so the sequence shown in the
         box IS the page order of the result.
         """
-        intro = ttk.Label(
+        theme.page_header(
             self.merge_tab,
-            text=(
-                "Combine any files into one PDF. Each file is converted to PDF "
-                "first, then merged in the order shown below."
-            ),
-            foreground="#555",
-            wraplength=700,
-            justify="left",
-        )
-        intro.pack(anchor="w", padx=8, pady=(8, 4))
+            "Merge PDF",
+            "Combine any files into one PDF. Each file is converted to PDF "
+            "first, then merged in the order shown below.",
+        ).pack(anchor="w", pady=(0, 10))
 
-        frame = ttk.LabelFrame(self.merge_tab, text="Files to merge (drag to reorder)")
-        frame.pack(fill="both", expand=True, padx=8, pady=4)
+        frame = theme.card(self.merge_tab)
+        frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        self.merge_list = tk.Listbox(frame, height=8, selectmode="extended")
-        self.merge_list.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        ttk.Label(
+            frame,
+            text="Files to merge (drag to reorder)",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(anchor="w", padx=14, pady=(10, 4))
+
+        body = ttk.Frame(frame, style="Card.TFrame")
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+
+        self.merge_list = tk.Listbox(body, height=8, selectmode="extended")
+        self.merge_list.pack(side="left", fill="both", expand=True, pady=(0, 2))
         self.merge_list.drop_target_register(DND_FILES)
         self.merge_list.dnd_bind("<<Drop>>", self._on_merge_drop)
         # NOTE: click-and-drag inside the list reorders it; numbering is redrawn
@@ -546,34 +718,53 @@ class App:
         self.merge_list.bind("<Button-1>", self._on_merge_drag_start, add="+")
         self.merge_list.bind("<B1-Motion>", self._on_merge_drag_motion)
         self.merge_list.bind("<ButtonRelease-1>", self._on_merge_drag_drop)
-        scroll = ttk.Scrollbar(frame, command=self.merge_list.yview)
-        scroll.pack(side="left", fill="y", pady=6)
+        scroll = ttk.Scrollbar(body, command=self.merge_list.yview)
+        scroll.pack(side="left", fill="y", pady=(0, 2))
         self.merge_list.configure(yscrollcommand=scroll.set)
 
-        side = ttk.Frame(frame)
-        side.pack(side="left", fill="y", padx=6)
-        ttk.Button(side, text="Add files", command=self.add_merge_files).pack(fill="x", pady=(4, 2))
-        ttk.Button(side, text="Remove", command=self.remove_merge_selected).pack(fill="x", pady=2)
-        ttk.Button(side, text="Clear", command=self.clear_merge_files).pack(fill="x", pady=2)
-        ttk.Separator(side, orient="horizontal").pack(fill="x", pady=4)
-        ttk.Button(side, text="Move Up", command=self.move_merge_up).pack(fill="x", pady=2)
-        ttk.Button(side, text="Move Down", command=self.move_merge_down).pack(fill="x", pady=(2, 4))
+        side = ttk.Frame(body, style="Card.TFrame")
+        side.pack(side="left", fill="y", padx=(10, 0))
+        ttk.Button(
+            side, text="Add files", command=self.add_merge_files, style="Card.TButton"
+        ).pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            side, text="Remove", command=self.remove_merge_selected, style="Card.TButton"
+        ).pack(fill="x", pady=6)
+        ttk.Button(
+            side, text="Clear", command=self.clear_merge_files, style="Card.TButton"
+        ).pack(fill="x", pady=6)
+        ttk.Separator(side, orient="horizontal").pack(fill="x", pady=10)
+        ttk.Button(
+            side, text="Move Up", command=self.move_merge_up, style="Card.TButton"
+        ).pack(fill="x", pady=6)
+        ttk.Button(
+            side, text="Move Down", command=self.move_merge_down, style="Card.TButton"
+        ).pack(fill="x", pady=6)
 
         self._build_merge_output_area()
 
     def _build_merge_output_area(self) -> None:
-        frame = ttk.LabelFrame(self.merge_tab, text="Merge options")
-        frame.pack(fill="x", padx=8, pady=4)
+        frame = theme.card(self.merge_tab)
+        frame.pack(fill="x", pady=(0, 10))
         frame.columnconfigure(3, weight=1)
 
-        ttk.Label(frame, text="Output folder:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        ttk.Label(
+            frame,
+            text="Merge options",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 6))
+
+        ttk.Label(frame, text="Output folder:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=2
+        )
         self.merge_out_var = tk.StringVar(value=str(self.config.get("merge_out_dir", "")))
         self.merge_out_entry = ttk.Entry(frame, textvariable=self.merge_out_var)
-        self.merge_out_entry.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
+        self.merge_out_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
         self.merge_browse_button = ttk.Button(
-            frame, text="Browse", command=self.pick_merge_output
+            frame, text="Browse", command=self.pick_merge_output, style="Card.TButton"
         )
-        self.merge_browse_button.grid(row=0, column=3, sticky="e", padx=6, pady=4)
+        self.merge_browse_button.grid(row=1, column=3, sticky="e", padx=(6, 14), pady=4)
 
         self.merge_same_folder_var = tk.BooleanVar(
             value=bool(self.config.get("merge_same_folder", True))
@@ -583,19 +774,22 @@ class App:
             text="Output in same folder as the first file",
             variable=self.merge_same_folder_var,
             command=self._toggle_merge_same_folder,
-        ).grid(row=1, column=1, columnspan=3, sticky="w", padx=6, pady=(0, 4))
+            style="Card.TCheckbutton",
+        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=(0, 12))
         self._update_merge_output_state()
 
-        action = ttk.Frame(self.merge_tab)
-        action.pack(fill="x", padx=8, pady=4)
+        action = theme.card(self.merge_tab)
+        action.pack(fill="x", pady=(0, 6))
         self.merge_button = ttk.Button(
             action, text="Merge to PDF", command=self.start_merge, style="Accent.TButton"
         )
-        self.merge_button.pack(side="left")
+        self.merge_button.pack(side="left", padx=14, pady=12)
         self.merge_progress = ttk.Progressbar(action, mode="determinate")
         self.merge_progress.pack(side="left", fill="x", expand=True, padx=8)
         self.merge_status_var = tk.StringVar(value="Ready")
-        ttk.Label(action, textvariable=self.merge_status_var).pack(side="left")
+        ttk.Label(action, textvariable=self.merge_status_var, style="Card.TLabel").pack(
+            side="left", padx=(0, 14)
+        )
 
         # NOTE: same disclosure pattern as the Convert File log - the frame is
         # pack_forget() when collapsed so it reserves NO vertical space at all
@@ -604,14 +798,15 @@ class App:
             self.merge_tab,
             text="\u25b8 Processing Log",
             command=self._toggle_merge_log,
+            style="Ghost.TButton",
         )
-        self.merge_log_button.pack(anchor="w", padx=8, pady=(4, 0))
-        log_frame = ttk.LabelFrame(self.merge_tab, text="Processing Log")
+        self.merge_log_button.pack(anchor="w", pady=(0, 6))
+        log_frame = theme.card(self.merge_tab)
         self.merge_log_frame = log_frame
         self.merge_log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
-        self.merge_log.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.merge_log.pack(side="left", fill="both", expand=True, padx=14, pady=12)
         log_scroll = ttk.Scrollbar(log_frame, command=self.merge_log.yview)
-        log_scroll.pack(side="left", fill="y", pady=6)
+        log_scroll.pack(side="left", fill="y", pady=12)
         self.merge_log.configure(yscrollcommand=log_scroll.set)
 
     def _toggle_merge_log(self) -> None:
@@ -625,93 +820,142 @@ class App:
     # ---------- edit tab ----------
 
     def _build_edit_area(self) -> None:
-        """Build the page organizer, visual text editor, and PDF tools."""
-        intro = ttk.Label(
+        """Build the page organiser, visual text editor, and PDF tools."""
+        header = theme.page_header(
             self.edit_tab,
-            text=(
-                "Rearrange an existing PDF: reorder, rotate or delete pages, "
-                "split or extract a range, and add a watermark or page numbers. "
-                "Changes are saved as a new file; the original is untouched."
-            ),
-            foreground="#555",
-            wraplength=700,
-            justify="left",
+            "Edit PDF",
+            "Rearrange an existing PDF: reorder, rotate or delete pages, split "
+            "or extract a range, and add a watermark or page numbers. Changes "
+            "are saved as a new file; the original is untouched.",
         )
-        # NOTE: this tab uses grid rather than pack. With pack, a tab shorter
-        # than the sum of its children's requested heights clips the LAST
-        # children outright: at the old 760x560 window the tab had 534 px but the
-        # content needed 639, so "Edit options" was sheared in half and the
-        # Apply row plus the log button fell off the tab completely. In grid,
-        # rowconfigure(minsize=...) reserves those rows and the middle notebook
-        # row is the one that shrinks instead.
-        intro.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 6))
+        # NOTE: this tab uses grid, with the sub-notebook as the only row that
+        # gives up height. With pack, the notebook keeps its REQUESTED height
+        # and squeezes the rows BELOW it - the Apply row and the log button -
+        # instead, so they fell off the bottom of the tab on a short window.
+        # In grid, rowconfigure(minsize=...) reserves those rows and the middle
+        # notebook row is the one that shrinks.
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         self.edit_tab.columnconfigure(0, weight=1)
+        self.edit_tab.rowconfigure(2, weight=1, minsize=80)
 
-        source_row = ttk.Frame(self.edit_tab)
-        source_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+        source_row = ttk.Frame(self.edit_tab, style="Card.TFrame")
+        source_row.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         self.edit_source_var = tk.StringVar(value="No PDF loaded")
         ttk.Button(
-            source_row, text="Import PDF", command=self.open_edit_pdf
-        ).pack(side="left")
+            source_row,
+            text="Import PDF",
+            command=self.open_edit_pdf,
+            style="Accent.TButton",
+        ).pack(side="left", padx=14, pady=10)
         self.edit_source_label = ttk.Label(
-            source_row, textvariable=self.edit_source_var, foreground="#555"
+            source_row, textvariable=self.edit_source_var, style="Card.TLabel"
         )
-        self.edit_source_label.pack(side="left", padx=8)
+        self.edit_source_label.pack(side="left", padx=14)
         # NOTE: Clear parks at the END of the row (side="right"), matching where
         # the source file label ends, so it reads as "drop this file" rather
         # than as another way to import one
         self.edit_clear_button = ttk.Button(
-            source_row, text="Clear", command=self.clear_edit_pdf
+            source_row, text="Clear", command=self.clear_edit_pdf, style="Card.TButton"
         )
-        self.edit_clear_button.pack(side="right")
+        self.edit_clear_button.pack(side="right", padx=14)
 
-        # minsize=80 keeps the Organize page list / Edit Text viewer usable; the
+        # minsize=80 keeps the Organise page list / Edit Text viewer usable; the
         # sub-notebook is the ONLY row that gives up height when the window is
         # resized down, so the rows below it never disappear
-        self.edit_tab.rowconfigure(2, weight=1, minsize=80)
-
         self.edit_notebook = ttk.Notebook(self.edit_tab)
-        self.edit_notebook.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
-        self.organize_tab = ttk.Frame(self.edit_notebook)
+        self.edit_notebook.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        self.organise_tab = ttk.Frame(self.edit_notebook)
         self.visual_text_tab = ttk.Frame(self.edit_notebook)
         self.tools_tab = ttk.Frame(self.edit_notebook)
-        self.edit_notebook.add(self.organize_tab, text="Organize Pages")
+        self.edit_notebook.add(self.organise_tab, text="Organise Pages")
         self.edit_notebook.add(self.visual_text_tab, text="Edit Text")
         self.edit_notebook.add(self.tools_tab, text="PDF Tools")
 
-        self._build_organize_area()
+        self._build_organise_area()
         self._build_visual_text_area()
         self._build_pdf_tools_area()
         self._build_edit_output_area()
 
-    def _build_organize_area(self) -> None:
-        frame = ttk.LabelFrame(self.organize_tab, text="Pages (drag to reorder)")
-        frame.pack(fill="both", expand=True, padx=6, pady=6)
+    def _build_organise_area(self) -> None:
+        """The drop zone, the page list, and the icon toolbar."""
+        # ---- the drop zone shown when no PDF is loaded ----
+        self.organise_drop = theme.card(self.organise_tab)
+        zone = theme.dashed_drop_zone(
+            self.organise_drop,
+            height=260,
+            on_drop=self._on_edit_drop,
+        )
+        zone.pack(fill="both", expand=True)
+        # the badge and the button live in the overlay frame, so they sit
+        # inside the dashed outline
+        content = zone.content
+        badge = theme.draw_pdf_badge(78, master=self.root)
+        self.organise_badge = badge
+        tk.Label(content, image=badge, background=theme.SURFACE).pack(pady=(12, 4))
+        tk.Label(
+            content,
+            text="Drop PDF here or",
+            background=theme.SURFACE,
+            foreground=theme.INK,
+            font=("TkDefaultFont", 11),
+        ).pack()
+        ttk.Button(
+            content,
+            text="Import PDF",
+            command=self.open_edit_pdf,
+            style="Accent.TButton",
+        ).pack(pady=8)
+        self.organise_drop_hint = tk.Label(
+            content,
+            text="No PDF loaded yet.",
+            background=theme.SURFACE,
+            foreground=theme.MUTED,
+            font=("TkDefaultFont", 9),
+        )
+        self.organise_drop_hint.pack()
 
-        self.page_list = tk.Listbox(frame, height=10, selectmode="extended")
-        self.page_list.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        # ---- the page list ----
+        self.organise_pages = theme.card(self.organise_tab)
+        frame = self.organise_pages
+        ttk.Label(
+            frame,
+            text="Pages (drag to reorder)",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 4))
+
+        body = ttk.Frame(frame, style="Card.TFrame")
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+
+        # NOTE: the list takes a fixed share of the card rather than every spare
+        # pixel. With expand=True it grew until the Apply row and the log button
+        # were pushed off the bottom of the tab, which is what the old grid
+        # layout was guarding against.
+        self.page_list = tk.Listbox(body, height=5, selectmode="extended")
+        self.page_list.pack(side="left", fill="both", expand=True, pady=(0, 2))
         self.page_list.bind("<Button-1>", self._on_page_drag_start, add="+")
         self.page_list.bind("<B1-Motion>", self._on_page_drag_motion)
         self.page_list.bind("<ButtonRelease-1>", self._on_page_drag_drop)
-        scroll = ttk.Scrollbar(frame, command=self.page_list.yview)
-        scroll.pack(side="left", fill="y", pady=6)
+        scroll = ttk.Scrollbar(body, command=self.page_list.yview)
+        scroll.pack(side="left", fill="y", pady=(0, 2))
         self.page_list.configure(yscrollcommand=scroll.set)
 
-        side = ttk.Frame(frame)
-        side.pack(side="left", fill="y", padx=6)
-        ttk.Button(side, text="Move Up", command=self.move_page_up).pack(fill="x", pady=(4, 2))
-        ttk.Button(side, text="Move Down", command=self.move_page_down).pack(fill="x", pady=2)
-        ttk.Separator(side, orient="horizontal").pack(fill="x", pady=2)
-        ttk.Button(
-            side, text="Rotate \u21ba 90\u00b0 (left)", command=self.rotate_page_ccw
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            side, text="Rotate \u21bb 90\u00b0 (right)", command=self.rotate_page_cw
-        ).pack(fill="x", pady=2)
-        ttk.Button(side, text="Rotate 180\u00b0", command=self.rotate_page_180).pack(fill="x", pady=2)
-        ttk.Separator(side, orient="horizontal").pack(fill="x", pady=2)
-        ttk.Button(side, text="Delete Page", command=self.delete_page).pack(fill="x", pady=2)
-        ttk.Button(side, text="Reset", command=self.reset_pages).pack(fill="x", pady=(2, 4))
+        # ---- the icon toolbar ----
+        toolbar = tk.Frame(frame, background=theme.SURFACE)
+        toolbar.pack(fill="x", padx=14, pady=(0, 12))
+        actions = (
+            ("Move Up", "up", self.move_page_up),
+            ("Move Down", "down", self.move_page_down),
+            ("Rotate Left", "rotate_left", self.rotate_page_ccw),
+            ("Rotate Right", "rotate_right", self.rotate_page_cw),
+            ("Rotate 180", "rotate_180", self.rotate_page_180),
+            ("Delete Page", "delete", self.delete_page),
+            ("Reset", "reset", self.reset_pages),
+        )
+        for text, glyph, command in actions:
+            button = theme.toolbar_button(toolbar, text, glyph, self._glyphs)
+            button.pack(side="left", padx=(0, 18))
+            theme.bind_click(button, command)
 
         # NOTE: rotate/delete act on the SELECTED rows, so an empty selection
         # must say so instead of looking like a dead button
@@ -719,25 +963,34 @@ class App:
             value="Select a page, then use the buttons."
         )
         ttk.Label(
-            self.organize_tab, textvariable=self.page_hint_var, foreground="#555"
-        ).pack(anchor="w", padx=8, pady=(0, 4))
+            self.organise_tab, textvariable=self.page_hint_var, style="CardMuted.TLabel"
+        ).pack(anchor="w", pady=(0, 8))
 
     def _build_edit_output_area(self) -> None:
-        frame = ttk.LabelFrame(self.edit_tab, text="Edit options")
-        frame.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
+        frame = theme.card(self.edit_tab)
+        frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         frame.columnconfigure(3, weight=1)
 
-        ttk.Label(frame, text="Output folder:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        ttk.Label(
+            frame,
+            text="Edit options",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 6))
+
+        ttk.Label(frame, text="Output folder:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=2
+        )
         self.edit_out_var = tk.StringVar(value=str(self.config.get("edit_out_dir", "")))
         # NOTE: entry and button are kept as attributes so the "Output in same
         # folder" checkbox can disable both together (same pattern as the
         # Convert File and Merge PDF tabs)
         self.edit_out_entry = ttk.Entry(frame, textvariable=self.edit_out_var)
-        self.edit_out_entry.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
+        self.edit_out_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
         self.edit_browse_button = ttk.Button(
-            frame, text="Browse", command=self.pick_edit_output
+            frame, text="Browse", command=self.pick_edit_output, style="Card.TButton"
         )
-        self.edit_browse_button.grid(row=0, column=3, sticky="e", padx=6, pady=4)
+        self.edit_browse_button.grid(row=1, column=3, sticky="e", padx=(6, 14), pady=4)
 
         self.edit_same_folder_var = tk.BooleanVar(
             value=bool(self.config.get("edit_same_folder", True))
@@ -747,56 +1000,59 @@ class App:
             text="Output in same folder",
             variable=self.edit_same_folder_var,
             command=self._toggle_edit_same_folder,
-        ).grid(row=1, column=1, columnspan=3, sticky="w", padx=6, pady=(0, 4))
+            style="Card.TCheckbutton",
+        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=(0, 12))
         self._update_edit_output_state()
 
-        action = ttk.Frame(self.edit_tab)
-        action.grid(row=4, column=0, sticky="ew", padx=8, pady=4)
+        action = theme.card(self.edit_tab)
+        action.grid(row=4, column=0, sticky="ew", pady=(0, 6))
         self.edit_apply_button = ttk.Button(
             action,
             text="Apply Page Changes",
-            command=self.run_organize,
+            command=self.run_organise,
             style="Accent.TButton",
         )
-        self.edit_apply_button.pack(side="left")
+        self.edit_apply_button.pack(side="left", padx=14, pady=12)
         ttk.Label(
             action,
             text="  Saves the reordered / rotated / trimmed pages as a new PDF.",
-            foreground="#555",
+            style="CardMuted.TLabel",
         ).pack(side="left")
         self.edit_progress = ttk.Progressbar(action, mode="determinate")
         self.edit_progress.pack(side="left", fill="x", expand=True, padx=8)
         self.edit_status_var = tk.StringVar(value="Ready")
-        ttk.Label(action, textvariable=self.edit_status_var).pack(side="left")
+        ttk.Label(action, textvariable=self.edit_status_var, style="Card.TLabel").pack(
+            side="left", padx=(0, 14)
+        )
 
-        # NOTE: the log frame stays pack-managed inside a single gridded row
-        # (the button is gridded at row 5). Hiding the log with grid_remove()
-        # would leave the reserved row visible; pack_forget() inside the row
-        # takes no space, matching the Convert File and Merge PDF behaviour.
+        # NOTE: the log frame is gridded at row 6, so hiding it with
+        # grid_remove() would leave an empty row behind. It is therefore kept
+        # in its own row and the whole row collapses when the log is closed.
         self.edit_log_open = False
         self.edit_log_button = ttk.Button(
             self.edit_tab,
             text="\u25b8 Processing Log",
             command=self._toggle_edit_log,
+            style="Ghost.TButton",
         )
-        self.edit_log_button.grid(row=5, column=0, sticky="w", padx=8, pady=(4, 0))
-        log_frame = ttk.LabelFrame(self.edit_tab, text="Processing Log")
+        self.edit_log_button.grid(row=5, column=0, sticky="w", pady=(0, 4))
+        log_frame = theme.card(self.edit_tab)
         self.edit_log_frame = log_frame
         self.edit_log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
-        self.edit_log.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.edit_log.pack(side="left", fill="both", expand=True, padx=14, pady=12)
         log_scroll = ttk.Scrollbar(log_frame, command=self.edit_log.yview)
-        log_scroll.pack(side="left", fill="y", pady=6)
+        log_scroll.pack(side="left", fill="y", pady=12)
         self.edit_log.configure(yscrollcommand=log_scroll.set)
 
     def _toggle_edit_log(self) -> None:
         if self.edit_log_open:
-            self.edit_log_frame.pack_forget()
+            self.edit_log_frame.grid_remove()
             self.edit_log_button.configure(text="\u25b8 Processing Log")
         else:
-            # NOTE: fill="x", NOT expand: the Edit tab's middle row (the
-            # sub-tab notebook) is the expanding one, so the log grows to its
-            # content height without ever pushing "Edit options" out of bounds
-            self.edit_log_frame.pack(fill="x", padx=8, pady=(2, 8))
+            # NOTE: the log lives BELOW the Apply row, so opening it must not
+            # push that row out of the tab. The row it occupies is reserved
+            # from the start and the notebook gives up the height instead.
+            self.edit_log_frame.grid(row=6, column=0, sticky="ew", pady=(0, 8))
             self.edit_log_button.configure(text="\u25be Processing Log")
         self.edit_log_open = not self.edit_log_open
 
@@ -812,78 +1068,115 @@ class App:
         self._build_stamp_area(right)
 
     def _build_split_area(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Split every N pages")
-        frame.pack(fill="x", pady=(4, 2))
-        ttk.Label(frame, text="Pages per file:").grid(row=0, column=0, sticky="w", padx=6, pady=2)
+        frame = theme.card(parent)
+        frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            frame,
+            text="Split every N pages",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(8, 3))
+        ttk.Label(frame, text="Pages per file:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=1
+        )
         self.split_every_var = tk.StringVar(value="1")
         ttk.Spinbox(
             frame, from_=1, to=1000, width=6, textvariable=self.split_every_var
-        ).grid(row=0, column=1, sticky="w", padx=(4, 0), pady=2)
-        ttk.Button(frame, text="Split PDF", command=self.run_split).grid(
-            row=0, column=2, sticky="w", padx=8, pady=2
-        )
+        ).grid(row=1, column=1, sticky="w", padx=(4, 0), pady=1)
+        ttk.Button(
+            frame, text="Split PDF", command=self.run_split, style="Card.TButton"
+        ).grid(row=1, column=2, sticky="w", padx=8, pady=1)
         ttk.Label(
             frame,
             text="One output file per chunk.",
-            foreground="#555",
-        ).grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
+            style="CardMuted.TLabel",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=12, pady=(1, 7))
 
-        extract = ttk.LabelFrame(parent, text="Extract a page range")
-        extract.pack(fill="x", pady=2)
-        ttk.Label(extract, text="Pages:").grid(row=0, column=0, sticky="w", padx=6, pady=2)
+        extract = theme.card(parent)
+        extract.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            extract,
+            text="Extract a page range",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(8, 3))
+        ttk.Label(extract, text="Pages:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=14, pady=2
+        )
         self.extract_pages_var = tk.StringVar(value="")
         ttk.Entry(extract, textvariable=self.extract_pages_var, width=18).grid(
-            row=0, column=1, sticky="w", padx=(4, 0), pady=2
+            row=1, column=1, sticky="w", padx=(4, 0), pady=2
         )
-        ttk.Button(extract, text="Extract", command=self.run_extract).grid(
-            row=0, column=2, sticky="w", padx=8, pady=2
-        )
+        ttk.Button(
+            extract, text="Extract", command=self.run_extract, style="Card.TButton"
+        ).grid(row=1, column=2, sticky="w", padx=8, pady=1)
         ttk.Label(
             extract,
             text="1-based, e.g. 1-3,5; kept in the given order.",
-            foreground="#555",
-        ).grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
+            style="CardMuted.TLabel",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=12, pady=(1, 7))
 
     def _build_stamp_area(self, parent: ttk.Frame) -> None:
-        mark = ttk.LabelFrame(parent, text="Watermark")
-        mark.pack(fill="x", pady=(4, 2))
-        ttk.Label(mark, text="Text:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        mark = theme.card(parent)
+        mark.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            mark,
+            text="Watermark",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=(8, 3))
+        ttk.Label(mark, text="Text:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=2
+        )
         self.watermark_var = tk.StringVar(value="CONFIDENTIAL")
         ttk.Entry(mark, textvariable=self.watermark_var, width=18).grid(
-            row=0, column=1, columnspan=2, sticky="w", padx=(4, 0), pady=6
+            row=1, column=1, columnspan=2, sticky="w", padx=(4, 0), pady=2
         )
         self.watermark_diagonal_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            mark, text="Diagonal", variable=self.watermark_diagonal_var
-        ).grid(row=1, column=1, sticky="w", padx=(4, 0), pady=(0, 6))
-        ttk.Button(mark, text="Add Watermark", command=self.run_watermark).grid(
-            row=0, column=3, sticky="w", padx=8, pady=6
-        )
+            mark,
+            text="Diagonal",
+            variable=self.watermark_diagonal_var,
+            style="Card.TCheckbutton",
+        ).grid(row=2, column=1, sticky="w", padx=(4, 0), pady=(0, 10))
+        ttk.Button(
+            mark, text="Add Watermark", command=self.run_watermark, style="Card.TButton"
+        ).grid(row=1, column=3, sticky="w", padx=8, pady=2)
 
-        numbers = ttk.LabelFrame(parent, text="Page numbers")
-        numbers.pack(fill="x", pady=2)
-        ttk.Label(numbers, text="Pattern:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        numbers = theme.card(parent)
+        numbers.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            numbers,
+            text="Page numbers",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=(8, 3))
+        ttk.Label(numbers, text="Pattern:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=2
+        )
         self.number_pattern_var = tk.StringVar(value="Page {page} of {total}")
         ttk.Entry(numbers, textvariable=self.number_pattern_var, width=18).grid(
-            row=0, column=1, sticky="w", padx=(4, 0), pady=6
+            row=1, column=1, columnspan=2, sticky="w", padx=(4, 0), pady=2
         )
-        ttk.Label(numbers, text="Position:").grid(row=1, column=0, sticky="w", padx=6, pady=6)
-        self.number_position_var = tk.StringVar(value="bottom-center")
+        ttk.Label(numbers, text="Position:", style="Card.TLabel").grid(
+            row=2, column=0, sticky="w", padx=12, pady=2
+        )
+        self.number_position_var = tk.StringVar(value="bottom-centre")
         ttk.Combobox(
             numbers,
             textvariable=self.number_position_var,
             state="readonly",
             width=16,
-            values=["bottom-center", "bottom-right", "bottom-left", "top-right", "top-center"],
-        ).grid(row=1, column=1, sticky="w", padx=(4, 0), pady=6)
-        ttk.Button(numbers, text="Add Numbers", command=self.run_page_numbers).grid(
-            row=0, column=3, rowspan=2, sticky="w", padx=8, pady=6
-        )
+            values=["bottom-centre", "bottom-right", "bottom-left", "top-right", "top-centre"],
+        ).grid(row=2, column=1, sticky="w", padx=(4, 0), pady=2)
+        ttk.Button(
+            numbers, text="Add Numbers", command=self.run_page_numbers, style="Card.TButton"
+        ).grid(row=1, column=3, rowspan=2, sticky="w", padx=8, pady=2)
         ttk.Label(
             numbers,
             text="  {page} = number, {total} = page count.",
-            foreground="#555",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+            style="CardMuted.TLabel",
+        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 8))
 
     def _build_visual_text_area(self) -> None:
         ttk.Label(
@@ -923,7 +1216,7 @@ class App:
         viewer.rowconfigure(0, weight=1)
         viewer.columnconfigure(0, weight=1)
         self.visual_text_canvas = tk.Canvas(
-            viewer, background="#e2e7ee", highlightthickness=0, height=180
+            viewer, background="#e2e7ee", highlightthickness=0, height=100
         )
         self.visual_text_canvas.grid(row=0, column=0, sticky="nsew")
         horizontal = ttk.Scrollbar(
@@ -1015,60 +1308,84 @@ class App:
         self.visual_text_save_button.pack(side="right")
 
     def _build_replace_area(self, parent: ttk.Frame) -> None:
-        repl = ttk.LabelFrame(parent, text="Find and replace")
-        repl.pack(fill="x", pady=2)
-        ttk.Label(repl, text="Find:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        repl = theme.card(parent)
+        repl.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            repl,
+            text="Find and replace",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(8, 3))
+        ttk.Label(repl, text="Find:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=2
+        )
         self.find_var = tk.StringVar(value="")
         ttk.Entry(repl, textvariable=self.find_var, width=18).grid(
-            row=0, column=1, sticky="ew", pady=4
-        )
-        ttk.Label(repl, text="Replace:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
-        self.replace_var = tk.StringVar(value="")
-        ttk.Entry(repl, textvariable=self.replace_var, width=18).grid(
             row=1, column=1, sticky="ew", pady=4
         )
+        ttk.Label(repl, text="Replace:", style="Card.TLabel").grid(
+            row=2, column=0, sticky="w", padx=12, pady=2
+        )
+        self.replace_var = tk.StringVar(value="")
+        ttk.Entry(repl, textvariable=self.replace_var, width=18).grid(
+            row=2, column=1, sticky="ew", pady=4
+        )
         self.find_case_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(repl, text="Match case", variable=self.find_case_var).grid(
-            row=2, column=1, sticky="w", padx=(4, 0), pady=(0, 4)
-        )
-        ttk.Button(repl, text="Find", command=self.run_find_text).grid(
-            row=0, column=2, sticky="w", padx=8, pady=4
-        )
-        ttk.Button(repl, text="Replace All", command=self.run_replace_text).grid(
-            row=1, column=2, sticky="w", padx=8, pady=4
-        )
+        ttk.Checkbutton(
+            repl,
+            text="Match case",
+            variable=self.find_case_var,
+            style="Card.TCheckbutton",
+        ).grid(row=3, column=1, sticky="w", padx=(4, 0), pady=(0, 4))
+        ttk.Button(
+            repl, text="Find", command=self.run_find_text, style="Card.TButton"
+        ).grid(row=1, column=2, sticky="w", padx=8, pady=1)
+        ttk.Button(
+            repl, text="Replace All", command=self.run_replace_text, style="Card.TButton"
+        ).grid(row=2, column=2, sticky="w", padx=8, pady=2)
         self.find_result_var = tk.StringVar(value="")
-        ttk.Label(repl, textvariable=self.find_result_var, foreground="#555").grid(
-            row=3, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 6)
+        ttk.Label(repl, textvariable=self.find_result_var, style="CardMuted.TLabel").grid(
+            row=4, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 8)
         )
-
 
     def _build_about_area(self) -> None:
-        ttk.Label(
-            self.about_tab, text="PDF-X", font=("TkDefaultFont", 16, "bold")
-        ).pack(anchor="w", padx=16, pady=(16, 2))
-        ttk.Label(
-            self.about_tab, text="Portable PDF converter and OCR toolbox."
-        ).pack(anchor="w", padx=16, pady=(0, 12))
+        theme.page_header(
+            self.about_tab,
+            "About",
+            "Portable PDF converter and OCR toolbox.",
+        ).pack(anchor="w", pady=(0, 10))
 
-        info = ttk.Frame(self.about_tab)
-        info.pack(anchor="w", padx=16, fill="x")
-        ttk.Label(info, text="Author:", font=("TkDefaultFont", 10, "bold")).grid(
-            row=0, column=0, sticky="w", pady=2
+        card = theme.card(self.about_tab)
+        card.pack(fill="x", pady=(0, 10))
+
+        info = ttk.Frame(card, style="Card.TFrame")
+        info.pack(anchor="w", padx=14, pady=(14, 10))
+        ttk.Label(
+            info, text="Author:", style="Card.TLabel", font=("TkDefaultFont", 10, "bold")
+        ).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(info, text=__author__, style="Card.TLabel").grid(
+            row=0, column=1, sticky="w", padx=(8, 0), pady=2
         )
-        ttk.Label(info, text=__author__).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=2)
-        ttk.Label(info, text="Version:", font=("TkDefaultFont", 10, "bold")).grid(
-            row=1, column=0, sticky="w", pady=2
+        ttk.Label(
+            info, text="Version:", style="Card.TLabel", font=("TkDefaultFont", 10, "bold")
+        ).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(info, text=__version__, style="Card.TLabel").grid(
+            row=1, column=1, sticky="w", padx=(8, 0), pady=2
         )
-        ttk.Label(info, text=__version__).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=2)
+        ttk.Label(
+            info,
+            text="No upload, no network, no admin rights: everything runs offline.",
+            style="CardMuted.TLabel",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 2))
 
         coffee = ttk.Frame(self.about_tab)
-        coffee.pack(side="bottom", anchor="w", padx=16, pady=16)
+        coffee.pack(side="bottom", anchor="w", pady=(0, 10))
         ttk.Label(coffee, text="Like what I built? Consider ").pack(side="left")
         coffee_link = tk.Label(
             coffee,
             text="buying me a cuppa",
-            fg="#0a58ca",
+            fg=theme.ACCENT,
+            background=theme.CANVAS,
             cursor="hand2",
             font=("TkDefaultFont", 9, "underline"),
         )
@@ -1078,10 +1395,13 @@ class App:
 
     # ---------- file selection ----------
 
-    def _on_file_drop(self, event) -> None:
-        paths = self.root.tk.splitlist(event.data)
-        self._add_paths([Path(path) for path in paths])
+    def _drop_paths(self, event) -> list[str]:
+        """The file paths carried by a drag-and-drop event."""
+        return drop_paths(event)
 
+    def _on_file_drop(self, event) -> None:
+        paths = self._drop_paths(event)
+        self._add_paths([Path(path) for path in paths])
     def add_files(self) -> None:
         paths = filedialog.askopenfilenames(
             title="Select files",
@@ -1105,7 +1425,7 @@ class App:
 
     @staticmethod
     def page_labels(pages: list[int], rotations: dict[int, int]) -> list[str]:
-        """The Organize list as shown: "1. Page 3  [rotated 90\u00b0 \u21bb]".
+        """The Organise list as shown: "1. Page 3  [rotated 90\u00b0 \u21bb]".
 
         NOTE: the leading number is the POSITION in the new document; the page
         number and an explicit rotation tag follow it. The tag names the
@@ -1132,6 +1452,21 @@ class App:
             initialdir=self._dialog_dir(),
             filetypes=[("PDF", "*.pdf"), ("All files", "*.*")],
         )
+        if not paths:
+            return
+        source = Path(paths[0])
+        try:
+            count = pdf_edit.page_count(source)
+        except ConversionError as exc:
+            messagebox.showerror("PDF-X", str(exc))
+            return
+        self._reset_edit_session(source, count)
+        self._load_visual_text_page()
+        self._warn_if_not_searchable()
+
+    def _on_edit_drop(self, event) -> None:
+        """Load a PDF dropped onto the Edit PDF drop zone."""
+        paths = self._drop_paths(event)
         if not paths:
             return
         source = Path(paths[0])
@@ -1175,10 +1510,13 @@ class App:
                 "No PDF loaded. Use Import PDF to choose a file."
             )
             self.edit_status_var.set("No PDF loaded")
+            self._show_drop_zone(True)
         else:
             self.edit_source_var.set(f"{source.name}  ({count} pages)")
             self._remember_dir(source.resolve().parent)
+            self._remember_recent(source)
             self.edit_status_var.set("Ready")
+            self._show_drop_zone(False)
         self._refresh_page_list()
         self.visual_text_var.set("")
         self.visual_text_entry.configure(state="disabled")
@@ -1188,6 +1526,28 @@ class App:
         self._text_redo.clear()
         self._sync_text_history()
         self._update_visual_text_nav()
+
+    def _show_drop_zone(self, visible: bool) -> None:
+        """Show the drop zone when no PDF is loaded, the page list once one is.
+
+        NOTE: the drop zone is the mockup's empty state, so it is only useful
+        while there is nothing to edit. Once a file is open the page list and
+        the toolbar take the space instead.
+        """
+        zone = getattr(self, "organise_drop", None)
+        pages = getattr(self, "organise_pages", None)
+        if zone is None or pages is None:
+            return
+        if visible:
+            # the page list is packed first so it keeps the place in the
+            # packing order, then the drop zone takes its slot
+            pages.pack(fill="both", expand=True)
+            zone.pack(fill="both", expand=True, before=pages)
+            pages.pack_forget()
+            self.organise_drop_hint.configure(text="No PDF loaded yet.")
+        else:
+            zone.pack_forget()
+            pages.pack(fill="both", expand=True)
 
     def clear_edit_pdf(self) -> None:
         """Drop the imported PDF and everything the editor was holding for it."""
@@ -1913,7 +2273,7 @@ class App:
         self.edit_status_var.set(note)
         self._set_edit_busy(False)
 
-    def run_organize(self) -> None:
+    def run_organise(self) -> None:
         if not self.edit_pages:
             messagebox.showinfo("PDF-X", "No pages to save.")
             return
@@ -1923,7 +2283,7 @@ class App:
         target = self._edit_output_target(src)
 
         def work():
-            return pdf_edit.organize(src, target, order=order, rotations=rotations)
+            return pdf_edit.organise(src, target, order=order, rotations=rotations)
 
         self._run_edit_task(work, "Saved reordered PDF")
 

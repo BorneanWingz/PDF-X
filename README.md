@@ -1,14 +1,19 @@
 # PDF-X
 
-**Version 0.1.5**
+**Version 0.1.6**
 
 Portable, offline PDF converter and OCR toolbox for internal team use.
 Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 
 - **GUI**: double-click `PDF-X.exe` (tkinter, no external runtime needed)
-  - **Convert File** tab holds every conversion option; a **Merge PDF** tab
-    combines files into one PDF; an **Edit PDF** tab edits an existing PDF; an
-    **About** tab carries the version and author details
+  - The window has a dark header with the brand mark, a **left sidebar** that
+    navigates between **Convert File**, **Merge PDF**, **Edit PDF** and
+    **About**, and a **RECENT FILES** list that reopens a document with one
+    click. Every page sits on a white card, so the layout reads the same
+    everywhere. The accent colour is the crimson of the app icon.
+  - **Convert File** holds every conversion option; **Merge PDF** combines
+    files into one PDF; **Edit PDF** edits an existing PDF; **About** carries
+    the version and author details
   - "Output in same folder" checkbox: writes results beside each input file and
     disables the Output folder field and Browse button while ticked
   - pressing Convert with neither an output folder nor the checkbox ticked asks
@@ -28,12 +33,14 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   the result; reorder with **Move Up** / **Move Down**, by dragging rows, or by
   adding files in the order you want. Needs at least two files; the result is
   `<first file>_pdfx_merged.pdf`.
-- **Edit PDF** tab: import one PDF and edit it, with no upload and no network.
+- **Edit PDF** page: import one PDF and edit it, with no upload and no network.
   **Import PDF** loads a file and **Clear** drops it again; changes are only
-  ever written to a new copy, so the original stays untouched.
-  - **Organize Pages**: reorder (**Move Up/Down** or drag), rotate 90° left
+  ever written to a new copy, so the original stays untouched. The page opens
+  on a dashed drop zone — drop a PDF on it, or use **Import PDF**.
+  - **Organise Pages**: reorder (**Move Up/Down** or drag), rotate 90° left
     (↺) / right (↻) or 180°, and delete pages. The list is numbered and tags each
     rotated page (e.g. `[rotated 90° ↻]`); the saved PDF follows that order.
+    The actions sit on an icon toolbar under the page list.
   - **Edit Text**: click a selectable text line in the page preview and queue
     a change, or choose **Add Text Box**, type in the box and drag its border
     into position on the current page. Choose an installed font and size; for
@@ -70,6 +77,25 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 - **No admin rights, no registry writes, no telemetry**: everything lives beside the executable.
 - **Offline by default**: only the optional promo banner check makes a network call, with a
   2-second timeout and silent failure.
+
+## What's new in 0.1.6
+
+- **The interface is rebuilt around a sidebar.** The old top tab strip is
+  gone: a dark header carries the brand mark and name, the left rail navigates
+  between Convert File, Merge PDF, Edit PDF and About, and **RECENT FILES**
+  reopens a document with one click. Every page is a white card, so the
+  hierarchy is the same on each one.
+- **The theme follows the icon.** The accent colour is the crimson of
+  `assets/pdf-x.png` rather than the generic blue, so the window, the buttons
+  and the app icon look like one product. The palette and the line glyphs live
+  in a new `pdftoolbox/theme.py` and are drawn with Pillow, so the app still
+  ships with no extra dependencies.
+- **Edit PDF opens on a drop zone.** A dashed drop target with a PDF badge
+  accepts a dragged file, and gives way to the page list once a document is
+  open. The page actions (move, rotate, delete, reset) now sit on an icon
+  toolbar under the page list.
+- **Wording follows British English** throughout the interface and the code:
+  *Organise Pages*, *bottom-centre*, *colour*.
 
 ## What's new in 0.1.5
 

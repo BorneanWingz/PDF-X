@@ -21,6 +21,9 @@ common_hidden = [
     "pdftoolbox",
     "pdftoolbox.cli",
     "pdftoolbox.gui",
+    # NOTE: the design system is imported by the GUI for its palette and its
+    # Pillow-drawn glyphs, so it must be pulled in explicitly
+    "pdftoolbox.theme",
     # NOTE: the GUI sets the window icon via ImageTk, which is imported lazily
     # inside _apply_window_icon(), so PyInstaller cannot see it on its own
     "PIL.ImageTk",

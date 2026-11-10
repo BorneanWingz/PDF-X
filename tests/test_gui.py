@@ -14,7 +14,7 @@ import pytest
 tk = pytest.importorskip("tkinter")
 
 from pdftoolbox.gui import App  # noqa: E402
-from pdftoolbox.gui import output_undecided  # noqa: E402
+from pdftoolbox.gui import drop_paths, output_undecided  # noqa: E402
 from pdftoolbox import gui as gui_module  # noqa: E402
 from pdftoolbox.engines import pdf_edit  # noqa: E402
 from pdftoolbox.system_fonts import FontFace  # noqa: E402
@@ -40,7 +40,8 @@ class TestOutputUndecided:
 
 def test_drop_splits_multiple_paths_with_spaces() -> None:
     class DropHarness:
-        root = SimpleNamespace(tk=tk.Tcl())
+        def _drop_paths(self, event) -> list[str]:
+            return drop_paths(event)
 
         def _add_paths(self, paths: list[Path]) -> None:
             self.paths = paths
@@ -55,6 +56,18 @@ def test_drop_splits_multiple_paths_with_spaces() -> None:
         Path("C:/My Files/report.pdf"),
         Path("D:/other file.pdf"),
     ]
+
+
+def test_drop_paths_helper_splits_a_drop_event() -> None:
+    paths = drop_paths(
+        SimpleNamespace(data="{C:/My Files/report.pdf} {D:/other file.pdf}")
+    )
+
+    assert paths == ["C:/My Files/report.pdf", "D:/other file.pdf"]
+
+
+def test_drop_paths_helper_handles_an_empty_drop() -> None:
+    assert drop_paths(SimpleNamespace(data="")) == []
 
 
 def test_processing_log_toggle_opens_and_closes() -> None:
@@ -83,8 +96,7 @@ def test_processing_log_toggle_opens_and_closes() -> None:
     assert harness.log_frame.options == {
         "fill": "both",
         "expand": True,
-        "padx": 8,
-        "pady": (2, 8),
+        "pady": (0, 8),
     }
     assert harness.log_button.options["text"] == "\u25be Processing Log"
 
@@ -140,14 +152,62 @@ def test_coffee_link_opens_donation_page(monkeypatch) -> None:
 
 @pytest.fixture(scope="module")
 def tk_root():
+    """The shared Tk root for the GUI tests.
+
+    NOTE: the tkdnd package can only be loaded ONCE per process and a second
+    Tk root cannot find init.tcl again, so this root IS the drag-and-drop
+    root: the whole App registers drop targets, which a plain tk.Tk cannot
+    do. The dnd_root fixture below hands out this same root.
+    """
+    from tkinterdnd2 import TkinterDnD
+
     try:
-        root = tk.Tk()
+        root = TkinterDnD.Tk()
     except tk.TclError as exc:
         pytest.skip(f"Tk display unavailable: {exc}")
     try:
         yield root
     finally:
         root.destroy()
+
+
+@pytest.fixture(scope="module")
+def dnd_root(tk_root):
+    """The drag-and-drop root the whole App needs to be built.
+
+    NOTE: it is the SAME root as tk_root, because the tkdnd package can only
+    be loaded once per interpreter and a second Tk root cannot find init.tcl.
+    """
+    yield tk_root
+
+
+@pytest.fixture
+def scratch_app(dnd_root, tmp_path, monkeypatch):
+    """A whole App that keeps its settings in a scratch file.
+
+    NOTE: the App loads and saves config.json beside the executable, so a test
+    that built one would rewrite the developer's own settings - including the
+    recent-files list. Redirecting both calls to a temporary file keeps the
+    tests self-contained.
+    """
+    from pdftoolbox import config as config_module
+    from pdftoolbox.gui import App
+
+    scratch = tmp_path / "config.json"
+    monkeypatch.setattr(config_module, "config_path", lambda: scratch)
+    monkeypatch.setattr(
+        "pdftoolbox.gui.load_config",
+        lambda path=None: config_module.load_config(scratch),
+    )
+    monkeypatch.setattr(
+        "pdftoolbox.gui.save_config",
+        lambda config, path=None: config_module.save_config(config, scratch),
+    )
+    app = App(dnd_root)
+    try:
+        yield app
+    finally:
+        app.shell.destroy()
 
 
 def test_pdf_tools_buttons_invoke_original_actions(tk_root, monkeypatch) -> None:
@@ -203,6 +263,10 @@ def text_editor(tmp_path, tk_root):
 
         app = App.__new__(App)
         app.root = root
+        app.config = {"recent_files": []}
+        # NOTE: the recent-files list is persisted, so the stub keeps a test run
+        # from rewriting the developer's own config.json
+        app._save_settings = lambda: None
         app.visual_text_tab = tk.Frame(root)
         app.visual_text_tab.pack()
         app.edit_source = source
@@ -468,7 +532,7 @@ def test_import_and_clear_buttons_close_the_source_row(tk_root, monkeypatch) -> 
     monkeypatch.setattr(app, "open_edit_pdf", lambda: calls.append("import"))
     monkeypatch.setattr(app, "clear_edit_pdf", lambda: calls.append("clear"))
     # only the source row is under test, so the heavier panes are stubbed out
-    monkeypatch.setattr(app, "_build_organize_area", lambda: None)
+    monkeypatch.setattr(app, "_build_organise_area", lambda: None)
     monkeypatch.setattr(app, "_build_visual_text_area", lambda: None)
     monkeypatch.setattr(app, "_build_pdf_tools_area", lambda: None)
     monkeypatch.setattr(app, "_build_edit_output_area", lambda: None)
@@ -532,6 +596,99 @@ def test_clear_drops_the_imported_file(text_editor) -> None:
     assert app.visual_text_page_var.get() == "Page 1 of 0"
     # the reminder belongs to the dropped file, so a later import warns again
     assert not app._visual_text_ocr_warning_shown
+
+
+def test_sidebar_navigation_shows_one_page_at_a_time(scratch_app) -> None:
+    app = scratch_app
+    app.root.update()
+    for key in ("convert", "merge", "edit", "about"):
+        app._show_page(key)
+        app.root.update()
+        assert app.current_page == key
+        assert app._pages[key].winfo_manager() == "pack", f"{key} page is shown"
+        for other, page in app._pages.items():
+            if other != key:
+                assert not page.winfo_manager(), f"{other} page is hidden"
+
+
+def test_edit_tab_keeps_its_apply_row_and_log_button_visible(scratch_app) -> None:
+    # Regression: the Edit PDF tab used to grow past the window, so the Apply
+    # row and the log button were pushed off the bottom of the tab.
+    app = scratch_app
+    app.root.geometry("1180x800")
+    app._show_page("edit")
+    app.root.update()
+    assert app.edit_apply_button.winfo_ismapped(), "Apply row is visible"
+    assert app.edit_log_button.winfo_ismapped(), "log button is visible"
+
+
+def test_edit_tab_keeps_its_apply_row_visible_on_a_short_window(scratch_app) -> None:
+    app = scratch_app
+    app.root.geometry("980x680")
+    app._show_page("edit")
+    app.root.update()
+    assert app.edit_apply_button.winfo_ismapped(), "Apply row is visible"
+    assert app.edit_log_button.winfo_ismapped(), "log button is visible"
+
+
+def test_edit_log_toggles_without_moving_the_apply_row(scratch_app) -> None:
+    app = scratch_app
+    app.root.geometry("1180x800")
+    app._show_page("edit")
+    app.root.update()
+    assert not app.edit_log_frame.winfo_manager(), "log starts collapsed"
+
+    app._toggle_edit_log()
+    app.root.update()
+    assert app.edit_log_frame.winfo_manager() == "grid", "log opens"
+    assert app.edit_apply_button.winfo_ismapped(), "Apply row stays visible"
+
+    app._toggle_edit_log()
+    app.root.update()
+    assert not app.edit_log_frame.winfo_manager(), "log closes"
+    assert app.edit_apply_button.winfo_ismapped(), "Apply row stays visible"
+
+
+def test_drop_zone_is_shown_until_a_pdf_is_loaded(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app.root.update()
+    app._show_page("edit")
+    app.root.update()
+    assert app.organise_drop.winfo_manager() == "pack", "drop zone shows when empty"
+    assert not app.organise_pages.winfo_manager(), "page list waits for a file"
+
+    source = tmp_path / "source.pdf"
+    from reportlab.pdfgen import canvas
+
+    pdf = canvas.Canvas(str(source))
+    pdf.drawString(72, 720, "A line of text for the sample document")
+    pdf.save()
+
+    app._reset_edit_session(source, 1)
+    app.root.update()
+    assert not app.organise_drop.winfo_manager(), "drop zone hides when loaded"
+    assert app.organise_pages.winfo_manager() == "pack", "page list shows"
+
+
+def test_recent_files_are_listed_without_duplicates(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    from reportlab.pdfgen import canvas
+
+    source = tmp_path / "recent.pdf"
+    pdf = canvas.Canvas(str(source))
+    pdf.drawString(72, 720, "A line of text for the sample document")
+    pdf.save()
+
+    app._remember_recent(source)
+    app._remember_recent(source)
+    app.root.update()
+
+    labels = [
+        child.winfo_children()[1].cget("text")
+        for child in app.recent_list.winfo_children()
+        if child.winfo_children()
+    ]
+    assert labels.count(source.name) == 1, labels
 
 
 def test_box_history_drag_remove_and_cross_page(text_editor) -> None:
