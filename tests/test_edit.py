@@ -321,6 +321,33 @@ class TestTextEditing:
         assert "Corrected" in text
         assert _page_count(out) == _page_count(source)
 
+    def test_edit_text_lines_uses_explicit_font_size_without_shrinking(
+        self, tmp_path: Path
+    ) -> None:
+        from pypdf.generic import ContentStream
+
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        match = pdf_edit.text_lines(source, 1)[0]
+        out = pdf_edit.edit_text_lines(
+            source, tmp_path / "edited.pdf", [(match, "Long replacement")],
+            font_sizes=[24],
+        )
+        reader = PdfReader(str(out))
+        operations = ContentStream(reader.pages[0].get_contents(), reader).operations
+        assert any(op == b"Tf" and float(args[1]) == 24 for args, op in operations)
+        assert "Long replacement" in _page_texts(out)[0]
+
+    @pytest.mark.parametrize("sizes", [[], [3], [201], [12, 14]])
+    def test_edit_text_lines_rejects_invalid_explicit_sizes(
+        self, tmp_path: Path, sizes: list[int]
+    ) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["A"])
+        match = pdf_edit.text_lines(source, 1)[0]
+        with pytest.raises(ConversionError, match="font size"):
+            pdf_edit.edit_text_lines(
+                source, tmp_path / "edited.pdf", [(match, "B")], font_sizes=sizes
+            )
+
     def test_edit_text_lines_rejects_replacement_that_will_not_fit(
         self, tmp_path: Path
     ) -> None:

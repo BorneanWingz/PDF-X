@@ -625,16 +625,23 @@ def edit_text_lines(
     edits: list[tuple[TextMatch, str]],
     font_paths: list[FontFace | None] | None = None,
     additions: list[PlacedText] | None = None,
+    font_sizes: list[int] | None = None,
 ) -> Path:
     """Cover selected text lines and draw replacements on a new PDF copy.
 
     Existing PDF text remains beneath the cover boxes, so this is a visual
     correction rather than secure redaction or content-stream replacement.
+    Explicit font sizes are used as supplied; otherwise replacements are
+    sized to fit their original line.
     """
     if not edits and not additions:
         raise ConversionError("no text changes to save")
     if font_paths is not None and len(font_paths) != len(edits):
         raise ConversionError("each text change needs a matching font")
+    if font_sizes is not None and (
+        len(font_sizes) != len(edits) or any(not 4 <= size <= 200 for size in font_sizes)
+    ):
+        raise ConversionError("each text change needs a font size from 4 to 200")
 
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
@@ -646,7 +653,10 @@ def edit_text_lines(
         if not replacement.strip():
             replacements.setdefault(match.page, [])
         else:
-            size = max(6, min(200, int(round(match.height * 0.82))))
+            size = (
+                font_sizes[index] if font_sizes is not None
+                else max(6, min(200, int(round(match.height * 0.82))))
+            )
             if "\x00" in replacement:
                 raise ConversionError("replacement text cannot contain a null character")
             try:
@@ -657,9 +667,9 @@ def edit_text_lines(
                 raise ConversionError(
                     "replacement contains characters unsupported by the built-in font"
                 ) from exc
-            if measured > match.width:
+            if font_sizes is None and measured > match.width:
                 size = floor(size * match.width / measured)
-            if size < 6:
+            if font_sizes is None and size < 6:
                 raise ConversionError(
                     f"replacement text does not fit the selected line: "
                     f"{replacement!r}"
