@@ -113,14 +113,12 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert app.merge_log_open is False
     assert not app.merge_log_frame.winfo_manager(), "collapsed log takes no space"
 
-    # Edit PDF tab exists with its four sub-tabs
+    # Edit PDF groups secondary operations after the visual editor.
     assert app.notebook.tab(2, "text") == "Edit PDF", "edit tab present"
-    assert [app.edit_notebook.tab(i, "text") for i in range(5)] == [
+    assert [app.edit_notebook.tab(i, "text") for i in range(3)] == [
         "Organize Pages",
-        "Split / Extract",
-        "Watermark / Numbers",
         "Edit Text",
-        "Find & Replace",
+        "PDF Tools",
     ], "edit sub-tabs"
     def button_labels(widget):
         labels = []
@@ -131,8 +129,33 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
         return labels
 
     assert "Add Text Box" in button_labels(app.visual_text_tab)
-    assert not any("add text" in label.lower() for label in button_labels(app.text_tab))
-    assert {"Find", "Replace All"} <= set(button_labels(app.text_tab))
+    assert not any("add text" in label.lower() for label in button_labels(app.tools_tab))
+    assert {
+        "Split PDF", "Extract", "Add Watermark", "Add Numbers", "Find", "Replace All"
+    } <= set(button_labels(app.tools_tab))
+
+    root.geometry("820x680")
+    root.deiconify()
+    app.notebook.select(app.edit_tab)
+    app.edit_notebook.select(app.tools_tab)
+    root.update()
+
+    def check_visible_buttons(widget):
+        for child in widget.winfo_children():
+            if child.winfo_class() in ("TButton", "Button"):
+                assert child.winfo_ismapped(), child.cget("text")
+                assert child.winfo_rootx() >= app.tools_tab.winfo_rootx()
+                assert child.winfo_rooty() >= app.tools_tab.winfo_rooty()
+                assert child.winfo_rootx() + child.winfo_width() <= (
+                    app.tools_tab.winfo_rootx() + app.tools_tab.winfo_width()
+                ), child.cget("text")
+                assert child.winfo_rooty() + child.winfo_height() <= (
+                    app.tools_tab.winfo_rooty() + app.tools_tab.winfo_height()
+                ), child.cget("text")
+            check_visible_buttons(child)
+
+    check_visible_buttons(app.tools_tab)
+    root.withdraw()
 
     visual_pdf = scratch / "visual-edit.pdf"
     visual = _reportlab_canvas(visual_pdf)
@@ -180,6 +203,15 @@ def _check(root: tk.Tk, app: App, scratch: Path) -> None:
     assert "Updated line" in saved and "Dragged note" in saved
     app._remove_text_box()
     assert not app.placed_text
+
+    # Clear drops the imported file and leaves the tab at its empty state
+    assert str(app.edit_clear_button["text"]) == "Clear"
+    app.edit_clear_button.invoke()
+    assert app.edit_source is None, "Clear drops the imported source"
+    assert app.edit_source_var.get() == "No PDF loaded"
+    assert not app.edit_pages and not app.visual_text_lines
+    assert str(app.visual_text_save_button["state"]) == "disabled"
+    assert str(app.visual_text_next["state"]) == "disabled"
 
     assert App.page_labels([3, 1, 2], {1: 90, 3: 180}) == [
         "1. Page 3  [rotated 180\u00b0]",

@@ -28,28 +28,36 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   the result; reorder with **Move Up** / **Move Down**, by dragging rows, or by
   adding files in the order you want. Needs at least two files; the result is
   `<first file>_pdfx_merged.pdf`.
-- **Edit PDF** tab: open one PDF and edit it, with no upload and no network.
+- **Edit PDF** tab: import one PDF and edit it, with no upload and no network.
+  **Import PDF** loads a file and **Clear** drops it again; changes are only
+  ever written to a new copy, so the original stays untouched.
   - **Organize Pages**: reorder (**Move Up/Down** or drag), rotate 90° left
     (↺) / right (↻) or 180°, and delete pages. The list is numbered and tags each
     rotated page (e.g. `[rotated 90° ↻]`); the saved PDF follows that order.
-  - **Split / Extract**: split every N pages into separate files, or extract a
-    page range (`1-3,5`) into one PDF.
-  - **Watermark / Numbers**: stamp a diagonal watermark, and add page numbers
-    such as `Page 1 of 10` in a choice of corners.
   - **Edit Text**: click a selectable text line in the page preview and queue
     a change, or choose **Add Text Box**, type in the box and drag its border
     into position on the current page. Choose an installed font and size; for
     an existing line the editor suggests an exact or close installed font
-    based on the PDF font name. Use **Save Edited Copy** to save both added
-    text and queued changes together.
+    based on the PDF font name. Font and size also apply to queued line
+    changes, including lines whose wording stays the same. Explicit sizes are
+    not automatically reduced to fit the original line. Use **Undo** and
+    **Redo** (or Ctrl+Z and Ctrl+Y in the editor) for text and box changes;
+    dragging a box counts as one change. Use **Save Edited Copy** to save both
+    added text and queued changes together.
     Selected TrueType fonts and TrueType collections are embedded in the output;
     unsupported font outlines are reported when saving. This is a line-level overlay:
     it does not reflow paragraphs, and the original characters remain beneath
     the cover box in the PDF text layer. Selecting existing text requires a
-    text layer; you can still add text to scanned pages. The visual editor
-    currently supports upright pages only.
-  - **Find & Replace**: search and replace terms across the document. These
-    are also visual overlays; adding text is in **Edit Text**.
+    text layer; you can still add text to scanned pages. Importing a PDF without
+    a text layer shows a one-time reminder to convert it to a **searchable-pdf**
+    on the **Convert File** tab first, and the editor warns once per opened PDF
+    when a page has no selectable text. For scanned text, use **Convert File**
+    to create a **searchable-pdf**, then import that copy for line editing.
+    The visual editor currently supports upright pages only.
+  - **PDF Tools**: split every N pages or extract a page range (`1-3,5`),
+    add a watermark or page numbers, and find and replace terms across the
+    document. Find and replace uses visual overlays; adding text is in
+    **Edit Text**.
   - Results are new files named `<name>_pdfx...pdf` (e.g. `_watermark`,
     `_numbered`, `_text`, `_replaced`, `_part1`) and never overwrite the source.
     The output folder uses the same controls as the other tabs: a folder field

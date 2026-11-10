@@ -11,7 +11,7 @@ import queue
 import threading
 import tkinter as tk
 import webbrowser
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -51,6 +51,23 @@ def output_undecided(same_folder: bool, out_dir_text: str) -> bool:
     return not same_folder and not out_dir_text.strip()
 
 
+TextKey = tuple[int, float, float, float, float, str]
+
+
+@dataclass
+class TextEditState:
+    edits: dict[TextKey, tuple[pdf_edit.TextMatch, str]]
+    fonts: dict[TextKey, FontFace]
+    sizes: dict[TextKey, int]
+    boxes: list[pdf_edit.PlacedText]
+    page: int
+    selected_line: pdf_edit.TextMatch | None
+    selected_box: int | None
+    text: str
+    font: str
+    size: str
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -69,13 +86,18 @@ class App:
         ] = {}
         self.selected_visual_text: pdf_edit.TextMatch | None = None
         self.visual_text_image = None
+        self._visual_text_ocr_warning_shown = False
         self.system_fonts = installed_fonts()
         self.visual_text_fonts: dict[tuple[int, float, float, float, float, str], FontFace] = {}
+        self.visual_text_sizes: dict[TextKey, int] = {}
         self.placed_text: list[pdf_edit.PlacedText] = []
         self.selected_placed_text: int | None = None
         self._text_drag_offset: tuple[float, float] | None = None
         self._updating_text_controls = False
         self._placed_images: list = []
+        self._text_undo: list[TextEditState] = []
+        self._text_redo: list[TextEditState] = []
+        self._text_history_current: TextEditState | None = None
         self.events: queue.Queue[tuple] = queue.Queue()
         self.worker: threading.Thread | None = None
 
@@ -92,6 +114,7 @@ class App:
         root.geometry("900x700")
         root.minsize(820, 680)
         self._apply_window_icon(root)
+        self._configure_styles(root)
 
         # Notebook: Convert File, Merge PDF, Edit PDF, and About
         self.notebook = ttk.Notebook(root)
@@ -115,6 +138,7 @@ class App:
         self._build_edit_area()
         self._build_about_area()
 
+        self._sync_text_history()
         self._refresh_targets()
         # NOTE: the queue + after() poll is the ONLY bridge from worker
         # threads back to Tk - Tk widgets must never be touched off-thread
@@ -185,6 +209,120 @@ class App:
         return folder if folder and Path(folder).is_dir() else None
 
     # ---------- layout ----------
+
+    def _configure_styles(self, root: tk.Tk) -> None:
+        """Apply a consistent, dependency-free color palette to the interface."""
+        colors = {
+            "background": "#f3f5f8",
+            "foreground": "#263244",
+            "muted": "#5b6675",
+            "border": "#d4dce6",
+            "surface": "#ffffff",
+            "accent": "#2563eb",
+            "accent_hover": "#1d4ed8",
+            "selection": "#dbeafe",
+        }
+        root.configure(background=colors["background"])
+        root.option_add("*Listbox.background", colors["surface"])
+        root.option_add("*Listbox.foreground", colors["foreground"])
+        root.option_add("*Listbox.selectBackground", colors["selection"])
+        root.option_add("*Listbox.selectForeground", colors["foreground"])
+        root.option_add("*Listbox.highlightBackground", colors["border"])
+        root.option_add("*Listbox.highlightColor", colors["accent"])
+        root.option_add("*Listbox.highlightThickness", 1)
+        root.option_add("*Text.background", colors["surface"])
+        root.option_add("*Text.foreground", colors["foreground"])
+        root.option_add("*Text.insertBackground", colors["foreground"])
+        root.option_add("*Text.selectBackground", colors["selection"])
+
+        style = ttk.Style(root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        style.configure(".", font="TkDefaultFont", foreground=colors["foreground"])
+        style.configure("TFrame", background=colors["background"])
+        style.configure("TLabel", background=colors["background"], foreground=colors["foreground"])
+        style.configure("TLabelframe", background=colors["background"], bordercolor=colors["border"])
+        style.configure(
+            "TLabelframe.Label",
+            background=colors["background"],
+            foreground=colors["foreground"],
+            font="TkDefaultFont",
+        )
+        style.configure("TNotebook", background=colors["background"], borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            padding=(10, 3),
+            background="#e8edf3",
+            foreground=colors["muted"],
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", colors["background"]), ("active", "#e1e8f0")],
+            foreground=[("selected", colors["accent"])],
+        )
+        style.configure(
+            "TButton",
+            padding=(7, 1),
+            background="#e8edf3",
+            foreground=colors["foreground"],
+            bordercolor=colors["border"],
+        )
+        style.map(
+            "TButton",
+            background=[
+                ("disabled", "#edf0f4"),
+                ("pressed", "#d4deeb"),
+                ("active", "#dce5f0"),
+            ],
+            foreground=[("disabled", "#8a94a3")],
+        )
+        style.configure(
+            "Accent.TButton",
+            background=colors["accent"],
+            foreground=colors["surface"],
+            bordercolor=colors["accent"],
+        )
+        style.map(
+            "Accent.TButton",
+            background=[
+                ("disabled", "#a9bde8"),
+                ("pressed", colors["accent_hover"]),
+                ("active", colors["accent_hover"]),
+            ],
+            foreground=[("disabled", colors["surface"])],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=colors["surface"],
+            foreground=colors["foreground"],
+            bordercolor=colors["border"],
+            insertcolor=colors["foreground"],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=colors["surface"],
+            foreground=colors["foreground"],
+            bordercolor=colors["border"],
+            arrowcolor=colors["muted"],
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", colors["surface"])],
+            foreground=[("readonly", colors["foreground"])],
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=colors["surface"],
+            foreground=colors["foreground"],
+            bordercolor=colors["border"],
+        )
+        style.configure(
+            "TProgressbar",
+            background=colors["accent"],
+            troughcolor="#e2e8f0",
+            bordercolor="#e2e8f0",
+        )
 
     def _build_file_area(self) -> None:
         ttk.Label(
@@ -330,7 +468,9 @@ class App:
     def _build_action_area(self) -> None:
         frame = ttk.Frame(self.convert_tab)
         frame.pack(fill="x", padx=8, pady=4)
-        self.convert_button = ttk.Button(frame, text="Convert", command=self.start_convert)
+        self.convert_button = ttk.Button(
+            frame, text="Convert", command=self.start_convert, style="Accent.TButton"
+        )
         self.convert_button.pack(side="left")
         self.progress = ttk.Progressbar(frame, mode="determinate")
         self.progress.pack(side="left", fill="x", expand=True, padx=8)
@@ -449,7 +589,7 @@ class App:
         action = ttk.Frame(self.merge_tab)
         action.pack(fill="x", padx=8, pady=4)
         self.merge_button = ttk.Button(
-            action, text="Merge to PDF", command=self.start_merge
+            action, text="Merge to PDF", command=self.start_merge, style="Accent.TButton"
         )
         self.merge_button.pack(side="left")
         self.merge_progress = ttk.Progressbar(action, mode="determinate")
@@ -485,12 +625,7 @@ class App:
     # ---------- edit tab ----------
 
     def _build_edit_area(self) -> None:
-        """Edit PDF tab: page organise, split/extract, and stamps.
-
-        Page operations (reorder, rotate, delete) are the core of both editors
-        this tab is modelled on; split/extract and the watermark/page-number
-        stamps are the two most-used extras they share.
-        """
+        """Build the page organizer, visual text editor, and PDF tools."""
         intro = ttk.Label(
             self.edit_tab,
             text=(
@@ -515,10 +650,20 @@ class App:
         source_row = ttk.Frame(self.edit_tab)
         source_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
         self.edit_source_var = tk.StringVar(value="No PDF loaded")
-        ttk.Button(source_row, text="Open PDF", command=self.open_edit_pdf).pack(side="left")
-        ttk.Label(source_row, textvariable=self.edit_source_var, foreground="#555").pack(
-            side="left", padx=8
+        ttk.Button(
+            source_row, text="Import PDF", command=self.open_edit_pdf
+        ).pack(side="left")
+        self.edit_source_label = ttk.Label(
+            source_row, textvariable=self.edit_source_var, foreground="#555"
         )
+        self.edit_source_label.pack(side="left", padx=8)
+        # NOTE: Clear parks at the END of the row (side="right"), matching where
+        # the source file label ends, so it reads as "drop this file" rather
+        # than as another way to import one
+        self.edit_clear_button = ttk.Button(
+            source_row, text="Clear", command=self.clear_edit_pdf
+        )
+        self.edit_clear_button.pack(side="right")
 
         # minsize=80 keeps the Organize page list / Edit Text viewer usable; the
         # sub-notebook is the ONLY row that gives up height when the window is
@@ -528,21 +673,15 @@ class App:
         self.edit_notebook = ttk.Notebook(self.edit_tab)
         self.edit_notebook.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
         self.organize_tab = ttk.Frame(self.edit_notebook)
-        self.split_tab = ttk.Frame(self.edit_notebook)
-        self.stamp_tab = ttk.Frame(self.edit_notebook)
         self.visual_text_tab = ttk.Frame(self.edit_notebook)
-        self.text_tab = ttk.Frame(self.edit_notebook)
+        self.tools_tab = ttk.Frame(self.edit_notebook)
         self.edit_notebook.add(self.organize_tab, text="Organize Pages")
-        self.edit_notebook.add(self.split_tab, text="Split / Extract")
-        self.edit_notebook.add(self.stamp_tab, text="Watermark / Numbers")
         self.edit_notebook.add(self.visual_text_tab, text="Edit Text")
-        self.edit_notebook.add(self.text_tab, text="Find & Replace")
+        self.edit_notebook.add(self.tools_tab, text="PDF Tools")
 
         self._build_organize_area()
-        self._build_split_area()
-        self._build_stamp_area()
         self._build_visual_text_area()
-        self._build_text_area()
+        self._build_pdf_tools_area()
         self._build_edit_output_area()
 
     def _build_organize_area(self) -> None:
@@ -614,7 +753,10 @@ class App:
         action = ttk.Frame(self.edit_tab)
         action.grid(row=4, column=0, sticky="ew", padx=8, pady=4)
         self.edit_apply_button = ttk.Button(
-            action, text="Apply Page Changes", command=self.run_organize
+            action,
+            text="Apply Page Changes",
+            command=self.run_organize,
+            style="Accent.TButton",
         )
         self.edit_apply_button.pack(side="left")
         ttk.Label(
@@ -658,45 +800,56 @@ class App:
             self.edit_log_button.configure(text="\u25be Processing Log")
         self.edit_log_open = not self.edit_log_open
 
-    def _build_split_area(self) -> None:
-        frame = ttk.LabelFrame(self.split_tab, text="Split every N pages")
-        frame.pack(fill="x", padx=6, pady=6)
-        ttk.Label(frame, text="Pages per file:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+    def _build_pdf_tools_area(self) -> None:
+        self.tools_tab.columnconfigure(0, weight=1, uniform="tools")
+        self.tools_tab.columnconfigure(1, weight=1, uniform="tools")
+        left = ttk.Frame(self.tools_tab)
+        left.grid(row=0, column=0, sticky="nsew", padx=(6, 3))
+        right = ttk.Frame(self.tools_tab)
+        right.grid(row=0, column=1, sticky="nsew", padx=(3, 6))
+        self._build_split_area(left)
+        self._build_replace_area(left)
+        self._build_stamp_area(right)
+
+    def _build_split_area(self, parent: ttk.Frame) -> None:
+        frame = ttk.LabelFrame(parent, text="Split every N pages")
+        frame.pack(fill="x", pady=(4, 2))
+        ttk.Label(frame, text="Pages per file:").grid(row=0, column=0, sticky="w", padx=6, pady=2)
         self.split_every_var = tk.StringVar(value="1")
         ttk.Spinbox(
             frame, from_=1, to=1000, width=6, textvariable=self.split_every_var
-        ).grid(row=0, column=1, sticky="w", padx=(4, 0), pady=6)
+        ).grid(row=0, column=1, sticky="w", padx=(4, 0), pady=2)
         ttk.Button(frame, text="Split PDF", command=self.run_split).grid(
-            row=0, column=2, sticky="w", padx=8, pady=6
+            row=0, column=2, sticky="w", padx=8, pady=2
         )
         ttk.Label(
             frame,
-            text="  One output file per chunk (a 10-page PDF in 3s -> 4 files).",
+            text="One output file per chunk.",
             foreground="#555",
-        ).grid(row=0, column=3, sticky="w", pady=6)
+        ).grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
 
-        extract = ttk.LabelFrame(self.split_tab, text="Extract a page range")
-        extract.pack(fill="x", padx=6, pady=6)
-        ttk.Label(extract, text="Pages:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        extract = ttk.LabelFrame(parent, text="Extract a page range")
+        extract.pack(fill="x", pady=2)
+        ttk.Label(extract, text="Pages:").grid(row=0, column=0, sticky="w", padx=6, pady=2)
         self.extract_pages_var = tk.StringVar(value="")
-        ttk.Entry(extract, textvariable=self.extract_pages_var, width=24).grid(
-            row=0, column=1, sticky="w", padx=(4, 0), pady=6
+        ttk.Entry(extract, textvariable=self.extract_pages_var, width=18).grid(
+            row=0, column=1, sticky="w", padx=(4, 0), pady=2
         )
         ttk.Button(extract, text="Extract", command=self.run_extract).grid(
-            row=0, column=2, sticky="w", padx=8, pady=6
+            row=0, column=2, sticky="w", padx=8, pady=2
         )
         ttk.Label(
             extract,
-            text="  1-based, e.g. 1-3,5. Kept in the order given, into one PDF.",
+            text="1-based, e.g. 1-3,5; kept in the given order.",
             foreground="#555",
-        ).grid(row=0, column=3, sticky="w", pady=6)
+        ).grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
 
-    def _build_stamp_area(self) -> None:
-        mark = ttk.LabelFrame(self.stamp_tab, text="Watermark")
-        mark.pack(fill="x", padx=6, pady=6)
+    def _build_stamp_area(self, parent: ttk.Frame) -> None:
+        mark = ttk.LabelFrame(parent, text="Watermark")
+        mark.pack(fill="x", pady=(4, 2))
         ttk.Label(mark, text="Text:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
         self.watermark_var = tk.StringVar(value="CONFIDENTIAL")
-        ttk.Entry(mark, textvariable=self.watermark_var, width=30).grid(
+        ttk.Entry(mark, textvariable=self.watermark_var, width=18).grid(
             row=0, column=1, columnspan=2, sticky="w", padx=(4, 0), pady=6
         )
         self.watermark_diagonal_var = tk.BooleanVar(value=True)
@@ -707,11 +860,11 @@ class App:
             row=0, column=3, sticky="w", padx=8, pady=6
         )
 
-        numbers = ttk.LabelFrame(self.stamp_tab, text="Page numbers")
-        numbers.pack(fill="x", padx=6, pady=6)
+        numbers = ttk.LabelFrame(parent, text="Page numbers")
+        numbers.pack(fill="x", pady=2)
         ttk.Label(numbers, text="Pattern:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
         self.number_pattern_var = tk.StringVar(value="Page {page} of {total}")
-        ttk.Entry(numbers, textvariable=self.number_pattern_var, width=30).grid(
+        ttk.Entry(numbers, textvariable=self.number_pattern_var, width=18).grid(
             row=0, column=1, sticky="w", padx=(4, 0), pady=6
         )
         ttk.Label(numbers, text="Position:").grid(row=1, column=0, sticky="w", padx=6, pady=6)
@@ -731,9 +884,6 @@ class App:
             text="  {page} = number, {total} = page count.",
             foreground="#555",
         ).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
-
-    def _build_text_area(self) -> None:
-        self._build_replace_area()
 
     def _build_visual_text_area(self) -> None:
         ttk.Label(
@@ -759,13 +909,21 @@ class App:
             nav, text="Next", command=lambda: self._navigate_visual_text(1)
         )
         self.visual_text_next.pack(side="left")
+        self.text_undo_button = ttk.Button(
+            nav, text="Undo", command=self._undo_text_edit, state="disabled"
+        )
+        self.text_undo_button.pack(side="left", padx=(12, 0))
+        self.text_redo_button = ttk.Button(
+            nav, text="Redo", command=self._redo_text_edit, state="disabled"
+        )
+        self.text_redo_button.pack(side="left", padx=(4, 0))
 
         viewer = ttk.Frame(self.visual_text_tab)
         viewer.pack(fill="both", expand=True, padx=6, pady=4)
         viewer.rowconfigure(0, weight=1)
         viewer.columnconfigure(0, weight=1)
         self.visual_text_canvas = tk.Canvas(
-            viewer, background="#777", highlightthickness=0, height=180
+            viewer, background="#e2e7ee", highlightthickness=0, height=180
         )
         self.visual_text_canvas.grid(row=0, column=0, sticky="nsew")
         horizontal = ttk.Scrollbar(
@@ -782,6 +940,12 @@ class App:
         self.visual_text_canvas.bind("<Button-1>", self._visual_text_click)
         self.visual_text_canvas.bind("<B1-Motion>", self._drag_placed_text)
         self.visual_text_canvas.bind("<ButtonRelease-1>", self._end_text_drag)
+        self.visual_text_canvas.tag_bind(
+            "placed-text-border", "<Enter>", self._on_text_box_border_enter
+        )
+        self.visual_text_canvas.tag_bind(
+            "placed-text-border", "<Leave>", self._on_text_box_border_leave
+        )
 
         font_row = ttk.Frame(self.visual_text_tab)
         font_row.pack(fill="x", padx=6, pady=2)
@@ -796,7 +960,10 @@ class App:
         self.text_font_box.pack(side="left")
         ttk.Label(font_row, text="Size:").pack(side="left", padx=(6, 2))
         self.add_text_size_var = tk.StringVar(value="14")
-        ttk.Spinbox(font_row, from_=4, to=200, width=5, textvariable=self.add_text_size_var).pack(side="left")
+        self.text_size_box = ttk.Spinbox(
+            font_row, from_=4, to=200, width=5, textvariable=self.add_text_size_var
+        )
+        self.text_size_box.pack(side="left")
         self.text_font_hint_var = tk.StringVar(value="Choose an installed font.")
         ttk.Label(self.visual_text_tab, textvariable=self.text_font_hint_var, foreground="#555").pack(anchor="w", padx=6)
 
@@ -820,6 +987,13 @@ class App:
         self.visual_text_queue_button.pack(side="left")
         for variable in (self.visual_text_var, self.text_font_var, self.add_text_size_var):
             variable.trace_add("write", self._update_placed_text)
+        for widget in (
+            self.visual_text_canvas, self.visual_text_entry, self.placed_text_entry,
+            self.text_font_box, self.text_size_box,
+        ):
+            widget.bind("<Control-z>", self._undo_text_edit)
+            widget.bind("<Control-y>", self._redo_text_edit)
+            widget.bind("<Control-Shift-Z>", self._redo_text_edit)
 
         footer = ttk.Frame(self.visual_text_tab)
         footer.pack(fill="x", padx=6, pady=(0, 6))
@@ -836,20 +1010,21 @@ class App:
             text="Save Edited Copy",
             command=self._save_visual_text_changes,
             state="disabled",
+            style="Accent.TButton",
         )
         self.visual_text_save_button.pack(side="right")
 
-    def _build_replace_area(self) -> None:
-        repl = ttk.LabelFrame(self.text_tab, text="Find and replace")
-        repl.pack(fill="x", padx=6, pady=4)
+    def _build_replace_area(self, parent: ttk.Frame) -> None:
+        repl = ttk.LabelFrame(parent, text="Find and replace")
+        repl.pack(fill="x", pady=2)
         ttk.Label(repl, text="Find:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
         self.find_var = tk.StringVar(value="")
-        ttk.Entry(repl, textvariable=self.find_var, width=28).grid(
+        ttk.Entry(repl, textvariable=self.find_var, width=18).grid(
             row=0, column=1, sticky="ew", pady=4
         )
         ttk.Label(repl, text="Replace:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
         self.replace_var = tk.StringVar(value="")
-        ttk.Entry(repl, textvariable=self.replace_var, width=28).grid(
+        ttk.Entry(repl, textvariable=self.replace_var, width=18).grid(
             row=1, column=1, sticky="ew", pady=4
         )
         self.find_case_var = tk.BooleanVar(value=False)
@@ -873,7 +1048,7 @@ class App:
             self.about_tab, text="PDF-X", font=("TkDefaultFont", 16, "bold")
         ).pack(anchor="w", padx=16, pady=(16, 2))
         ttk.Label(
-            self.about_tab, text="Portable offline PDF converter and OCR toolbox."
+            self.about_tab, text="Portable PDF converter and OCR toolbox."
         ).pack(anchor="w", padx=16, pady=(0, 12))
 
         info = ttk.Frame(self.about_tab)
@@ -953,7 +1128,7 @@ class App:
 
     def open_edit_pdf(self) -> None:
         paths = filedialog.askopenfilenames(
-            title="Open a PDF to edit",
+            title="Import a PDF to edit",
             initialdir=self._dialog_dir(),
             filetypes=[("PDF", "*.pdf"), ("All files", "*.*")],
         )
@@ -965,25 +1140,152 @@ class App:
         except ConversionError as exc:
             messagebox.showerror("PDF-X", str(exc))
             return
+        self._reset_edit_session(source, count)
+        self._load_visual_text_page()
+        self._warn_if_not_searchable()
+
+    def _reset_edit_session(self, source: Path | None, count: int) -> None:
+        """Point the tab at ``source`` (or at nothing when it is None).
+
+        NOTE: every piece of per-file text-editing state is dropped here, so a
+        fresh import and Clear cannot leave edits, undo history, or a stale
+        preview pointing at a different file.
+        """
         self.edit_source = source
         self.edit_pages = list(range(1, count + 1))
         self.edit_rotations = {}
         self.visual_text_page = 1
         self.visual_text_total_pages = count
+        self._visual_text_ocr_warning_shown = False
         self.visual_text_edits.clear()
         self.visual_text_fonts.clear()
+        self.visual_text_sizes.clear()
         self.placed_text.clear()
         self.selected_placed_text = None
         self.selected_visual_text = None
-        self.edit_source_var.set(f"{source.name}  ({count} pages)")
-        self._remember_dir(source.resolve().parent)
+        if source is None:
+            self.edit_source_var.set("No PDF loaded")
+            self.visual_text_lines = []
+            # NOTE: dropping the PhotoImage reference frees the preview; the
+            # canvas is emptied first so nothing can be drawn from the old page
+            self.visual_text_image = None
+            self.visual_text_canvas.delete("all")
+            self.visual_text_canvas.configure(scrollregion=(0, 0, 0, 0))
+            self.visual_text_status_var.set(
+                "No PDF loaded. Use Import PDF to choose a file."
+            )
+            self.edit_status_var.set("No PDF loaded")
+        else:
+            self.edit_source_var.set(f"{source.name}  ({count} pages)")
+            self._remember_dir(source.resolve().parent)
+            self.edit_status_var.set("Ready")
         self._refresh_page_list()
-        self.edit_status_var.set("Ready")
         self.visual_text_var.set("")
         self.visual_text_entry.configure(state="disabled")
         self.visual_text_queue_button.configure(state="disabled")
         self.visual_text_save_button.configure(state="disabled")
+        self._text_undo.clear()
+        self._text_redo.clear()
+        self._sync_text_history()
+        self._update_visual_text_nav()
+
+    def clear_edit_pdf(self) -> None:
+        """Drop the imported PDF and everything the editor was holding for it."""
+        self._reset_edit_session(None, 0)
+
+    def _warn_if_not_searchable(self) -> None:
+        """Remind once per imported file when it carries no text layer.
+
+        NOTE: a scan has no selectable text, so line editing is impossible until
+        the PDF is OCR'd. Any other PDF that simply happens to hold under
+        ``MIN_TEXT_CHARS`` characters would only produce noise in the editor, so
+        both cases get the same pointer to Convert File: searchable-pdf. The
+        flag is reset by every import, so the reminder is once per file, not
+        once per page.
+        """
+        if self.edit_source is None or self._visual_text_ocr_warning_shown:
+            return
+        try:
+            searchable = pdf_text.has_text_layer(self.edit_source)
+        except (ConversionError, OSError):
+            return
+        if searchable:
+            return
+        self._visual_text_ocr_warning_shown = True
+        messagebox.showwarning(
+            "PDF-X",
+            "This PDF has no OCR text layer, so its text cannot be selected or "
+            "edited as lines.\n\n"
+            "Use the Convert File tab first: choose SEARCHABLE-PDF as the "
+            "target, then import the converted copy here. You can still add "
+            "text boxes to this PDF.",
+            parent=self.root,
+        )
+
+    def _text_edit_state(self) -> TextEditState:
+        return TextEditState(
+            edits=self.visual_text_edits.copy(),
+            fonts=self.visual_text_fonts.copy(),
+            sizes=self.visual_text_sizes.copy(),
+            boxes=self.placed_text.copy(),
+            page=self.visual_text_page,
+            selected_line=self.selected_visual_text,
+            selected_box=self.selected_placed_text,
+            text=self.visual_text_var.get(),
+            font=self.text_font_var.get(),
+            size=self.add_text_size_var.get(),
+        )
+
+    def _sync_text_history(self) -> None:
+        self._text_history_current = self._text_edit_state()
+        self.text_undo_button.configure(state="normal" if self._text_undo else "disabled")
+        self.text_redo_button.configure(state="normal" if self._text_redo else "disabled")
+
+    def _record_text_edit(self) -> None:
+        current = self._text_edit_state()
+        if self._text_history_current is not None and current != self._text_history_current:
+            self._text_undo.append(self._text_history_current)
+            self._text_redo.clear()
+        self._sync_text_history()
+
+    def _restore_text_edit(self, state: TextEditState) -> None:
+        self.visual_text_edits = state.edits.copy()
+        self.visual_text_fonts = state.fonts.copy()
+        self.visual_text_sizes = state.sizes.copy()
+        self.placed_text = state.boxes.copy()
+        self.visual_text_page = state.page
+        self.selected_visual_text = state.selected_line
+        self.selected_placed_text = state.selected_box
+        self._text_drag_offset = None
+        self._updating_text_controls = True
+        try:
+            self.visual_text_var.set(state.text)
+            self.text_font_var.set(state.font)
+            self.add_text_size_var.set(state.size)
+        finally:
+            self._updating_text_controls = False
+        selected = state.selected_line is not None or state.selected_box is not None
+        self.visual_text_entry.configure(state="normal" if selected else "disabled")
+        self.visual_text_queue_button.configure(
+            state="normal" if state.selected_line is not None else "disabled"
+        )
+        self.visual_text_save_button.configure(
+            state="normal" if state.edits or state.boxes else "disabled"
+        )
         self._load_visual_text_page()
+        self._sync_text_history()
+
+    def _undo_text_edit(self, _event=None) -> str:
+        if self._text_undo:
+            self._text_redo.append(self._text_edit_state())
+            self._restore_text_edit(self._text_undo.pop())
+        return "break"
+
+    def _redo_text_edit(self, _event=None) -> str:
+        if self._text_redo:
+            self._text_undo.append(self._text_edit_state())
+            self._restore_text_edit(self._text_redo.pop())
+        return "break"
 
     @staticmethod
     def _visual_text_key(
@@ -1030,11 +1332,12 @@ class App:
             if replacement:
                 face = self.visual_text_fonts.get(self._visual_text_key(match))
                 try:
-                    font = ImageFont.truetype(str(face.path), max(8, int(match.height * 0.82)), index=face.index) if face else ImageFont.load_default()
+                    size = self.visual_text_sizes[self._visual_text_key(match)]
+                    font = ImageFont.truetype(str(face.path), size, index=face.index) if face else ImageFont.load_default()
                 except OSError as exc:
                     self.visual_text_status_var.set(f"Cannot load font: {exc}")
                     return
-                draw.text((match.x0, match.top), replacement, fill="black", font=font)
+                draw.text((match.x0, match.top + size), replacement, fill="black", font=font, anchor="ls")
 
         if self.selected_visual_text is not None:
             selected = self.selected_visual_text
@@ -1053,8 +1356,24 @@ class App:
             scrollregion=(0, 0, image.width, image.height)
         )
         self._draw_placed_text()
+        self._update_visual_text_nav()
 
-        count = self.visual_text_total_pages
+        if self.visual_text_lines:
+            self.visual_text_status_var.set(
+                f"{len(self.visual_text_lines)} selectable text line(s) on this page."
+            )
+        else:
+            self.visual_text_status_var.set(
+                "No selectable text on this page. Scanned text needs OCR first; "
+                "you can still add a text box."
+            )
+            # NOTE: importing a PDF with no text layer already showed the
+            # Convert File reminder (see _warn_if_not_searchable), so the flag
+            # stays up and this page-level warning never stacks on top of it
+            self._warn_if_not_searchable()
+
+    def _update_visual_text_nav(self) -> None:
+        """Show the page counter and enable Previous/Next from the loaded file."""
         self.visual_text_page_var.set(
             f"Page {self.visual_text_page} of {self.visual_text_total_pages}"
         )
@@ -1062,16 +1381,12 @@ class App:
             state="normal" if self.visual_text_page > 1 else "disabled"
         )
         self.visual_text_next.configure(
-            state="normal" if self.visual_text_page < count else "disabled"
+            state=(
+                "normal"
+                if self.visual_text_page < self.visual_text_total_pages
+                else "disabled"
+            )
         )
-        if self.visual_text_lines:
-            self.visual_text_status_var.set(
-                f"{len(self.visual_text_lines)} selectable text line(s) on this page."
-            )
-        else:
-            self.visual_text_status_var.set(
-                "No selectable text on this page. Scanned pages need OCR first."
-            )
 
     def _navigate_visual_text(self, step: int) -> None:
         if self.edit_source is None:
@@ -1086,6 +1401,7 @@ class App:
         self.visual_text_entry.configure(state="disabled")
         self.visual_text_queue_button.configure(state="disabled")
         self._load_visual_text_page()
+        self._sync_text_history()
 
     def _add_text_box(self) -> None:
         if not self._edit_ready() or self.edit_source is None:
@@ -1113,6 +1429,7 @@ class App:
         ))
         self._select_placed_text(len(self.placed_text) - 1)
         self.visual_text_save_button.configure(state="normal")
+        self._record_text_edit()
         self._draw_placed_text()
         self.placed_text_entry.focus_set()
         self.placed_text_entry.selection_range(0, "end")
@@ -1138,7 +1455,13 @@ class App:
 
     def _update_placed_text(self, *_args) -> None:
         index = self.selected_placed_text
-        if self._updating_text_controls or index is None:
+        if self._updating_text_controls:
+            return
+        if index is None:
+            if self.selected_visual_text is not None:
+                self._record_text_edit()
+            else:
+                self._sync_text_history()
             return
         try:
             size = int(self.add_text_size_var.get())
@@ -1152,6 +1475,7 @@ class App:
             font_index=font.index if font else 0,
             font_size=size,
         )
+        self._record_text_edit()
         self._draw_placed_text()
 
     def _draw_placed_text(self) -> None:
@@ -1194,11 +1518,17 @@ class App:
             canvas.create_rectangle(
                 item.x, item.top, item.x + width + 8, item.top + height + 8,
                 outline="#d00000" if index == self.selected_placed_text else "#5555cc",
-                dash=(3, 2), tags=tags,
+                dash=(3, 2), tags=(*tags, "placed-text-border"),
             )
         if focus_in_box and self.selected_placed_text is not None:
             self.placed_text_entry.focus_set()
             self.placed_text_entry.icursor(cursor)
+
+    def _on_text_box_border_enter(self, _event) -> None:
+        self.visual_text_canvas.configure(cursor="fleur")
+
+    def _on_text_box_border_leave(self, _event) -> None:
+        self.visual_text_canvas.configure(cursor="")
 
     def _visual_text_click(self, event) -> None:
         x = self.visual_text_canvas.canvasx(event.x)
@@ -1211,9 +1541,11 @@ class App:
                     item = self.placed_text[index]
                     self._text_drag_offset = (x - item.x, y - item.top)
                     self._load_visual_text_page()
+                    self._sync_text_history()
                     return
         self.selected_placed_text = None
         self._select_visual_text(event)
+        self._sync_text_history()
 
     def _drag_placed_text(self, event) -> None:
         index = self.selected_placed_text
@@ -1229,6 +1561,8 @@ class App:
         self._draw_placed_text()
 
     def _end_text_drag(self, _event) -> None:
+        if self._text_drag_offset is not None:
+            self._record_text_edit()
         self._text_drag_offset = None
 
     def _remove_text_box(self) -> None:
@@ -1241,6 +1575,7 @@ class App:
         self.visual_text_save_button.configure(
             state="normal" if self.placed_text or self.visual_text_edits else "disabled"
         )
+        self._record_text_edit()
         self._draw_placed_text()
 
     def _select_visual_text(self, event) -> None:
@@ -1266,18 +1601,27 @@ class App:
         if saved_font:
             suggestion = next((name for name, face in self.system_fonts.items() if face == saved_font), suggestion)
         if suggestion:
-            self.text_font_var.set(suggestion)
             self.text_font_hint_var.set(
                 f"PDF font: {match.font_name or 'unknown'}; {'exact match' if exact else 'closest match'}: {suggestion}."
             )
         else:
             self.text_font_hint_var.set(f"PDF font: {match.font_name or 'unknown'}; select an installed font.")
-        self.visual_text_var.set(replacement)
+        self._updating_text_controls = True
+        try:
+            if suggestion:
+                self.text_font_var.set(suggestion)
+            self.add_text_size_var.set(str(
+                self.visual_text_sizes.get(key, max(4, min(200, round(match.height * 0.82))))
+            ))
+            self.visual_text_var.set(replacement)
+        finally:
+            self._updating_text_controls = False
         self.visual_text_entry.configure(state="normal")
         self.visual_text_queue_button.configure(state="normal")
         self.visual_text_entry.focus_set()
         self.visual_text_entry.selection_range(0, "end")
         self._load_visual_text_page()
+        self._sync_text_history()
 
     def _queue_visual_text_change(self) -> None:
         match = self.selected_visual_text
@@ -1285,16 +1629,21 @@ class App:
             return
         replacement = self.visual_text_var.get()
         key = self._visual_text_key(match)
-        if replacement == match.text:
-            self.visual_text_edits.pop(key, None)
-            self.visual_text_fonts.pop(key, None)
-        else:
-            font = self.system_fonts.get(self.text_font_var.get())
-            if font is None:
-                messagebox.showerror("PDF-X", "Select an installed font.")
-                return
-            self.visual_text_edits[key] = (match, replacement)
-            self.visual_text_fonts[key] = font
+        font = self.system_fonts.get(self.text_font_var.get())
+        if font is None:
+            messagebox.showerror("PDF-X", "Select an installed font.")
+            return
+        try:
+            size = int(self.add_text_size_var.get())
+            if not 4 <= size <= 200:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("PDF-X", "Font size must be between 4 and 200.")
+            return
+        self.visual_text_edits[key] = (match, replacement)
+        self.visual_text_fonts[key] = font
+        self.visual_text_sizes[key] = size
+        self._record_text_edit()
         count = len(self.visual_text_edits)
         self.visual_text_save_button.configure(
             state="normal" if count or self.placed_text else "disabled"
@@ -1312,7 +1661,10 @@ class App:
             return
         source = self.edit_source
         edits = list(self.visual_text_edits.values())
-        fonts = [self.visual_text_fonts[key] for key in self.visual_text_edits]
+        fonts: list[FontFace | None] = [
+            self.visual_text_fonts[key] for key in self.visual_text_edits
+        ]
+        sizes = [self.visual_text_sizes[key] for key in self.visual_text_edits]
         additions = list(self.placed_text)
         if any(not item.text.strip() or item.font_path is None or not 4 <= item.font_size <= 200 for item in additions):
             messagebox.showerror("PDF-X", "Every text box needs text, an installed font, and a size from 4 to 200.")
@@ -1320,7 +1672,9 @@ class App:
         target = self._edit_output_target(source, "_textedited")
 
         def work():
-            return pdf_edit.edit_text_lines(source, target, edits, fonts, additions)
+            return pdf_edit.edit_text_lines(
+                source, target, edits, fonts, additions, font_sizes=sizes
+            )
 
         def _done(path: Path) -> None:
             self.visual_text_status_var.set(
