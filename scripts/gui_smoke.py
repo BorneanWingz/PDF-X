@@ -108,32 +108,28 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
         "2. y.png",
     ], "numbering helper"
 
-    # merge Processing Log starts collapsed and takes no space
-    assert app.merge_log_open is False, "merge log starts collapsed"
-    assert not app.merge_log_frame.winfo_manager(), "no merge log container"
-    assert str(app.merge_log_button["text"]).startswith("\u25b8"), "closed marker"
-    app._toggle_merge_log()
-    root.update_idletasks()
-    assert app.merge_log_open is True and app.merge_log_frame.winfo_manager() == "pack"
-    app._toggle_merge_log()
-    root.update_idletasks()
-    assert app.merge_log_open is False
-    assert not app.merge_log_frame.winfo_manager(), "collapsed log takes no space"
+    # the on-screen Processing Log is gone; the helpers still record to the log
+    for attribute in ("merge_log_open", "merge_log_frame", "merge_log_button"):
+        assert not hasattr(app, attribute), attribute
 
     # the sidebar drives the navigation, and only one page is shown at a time
-    assert sorted(app._sidebar_rows) == ["about", "convert", "edit", "merge"]
+    assert list(app._sidebar_rows) == [
+        "convert", "merge", "organise", "edit", "utilities", "about"
+    ], "sidebar entries"
     app._show_page("merge")
     root.update_idletasks()
     assert app.current_page == "merge"
     assert app.merge_tab.winfo_manager() == "pack", "merge page is shown"
     assert not app.convert_tab.winfo_manager(), "other pages are hidden"
 
-    # Edit PDF groups secondary operations after the visual editor.
-    assert [app.edit_notebook.tab(i, "text") for i in range(3)] == [
-        "Organise Pages",
-        "Edit Text",
-        "PDF Tools",
-    ], "edit sub-tabs"
+    # Organise PDF is its own page, and it owns the page list and split/extract
+    app._show_page("organise")
+    root.update_idletasks()
+    assert app.organise_tab.winfo_manager() == "pack", "organise page is shown"
+    assert app.organise_drop.winfo_manager() == "pack", "its drop zone opens"
+
+    # Edit PDF keeps the visual editor; PDF Tools is its own Utilities page
+    assert not hasattr(app, "edit_notebook"), "no sub-notebook any more"
     def button_labels(widget):
         labels = []
         for child in widget.winfo_children():
@@ -145,19 +141,20 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
     assert "Add Text Box" in button_labels(app.visual_text_tab)
     assert not any("add text" in label.lower() for label in button_labels(app.tools_tab))
     assert {
-        "Split PDF", "Extract", "Add Watermark", "Add Numbers", "Find", "Replace All"
+        "Add Watermark", "Add Numbers", "Find", "Replace All", "Compress PDF"
     } <= set(button_labels(app.tools_tab))
+    # split and extract belong to the Organise PDF page, next to the page list
+    assert {"Split PDF", "Extract"} <= set(button_labels(app.organise_tab))
 
-    # the Edit PDF tab opens on its empty state, showing the drop zone
-    app._show_page("edit")
+    # the Organise PDF page opens on its empty state, showing the drop zone
+    app._show_page("organise")
     root.update_idletasks()
     assert app.organise_drop.winfo_manager() == "pack", "drop zone shows when empty"
     assert not app.organise_pages.winfo_manager(), "page list waits for a file"
 
     root.geometry("1180x800")
     root.deiconify()
-    app._show_page("edit")
-    app.edit_notebook.select(app.tools_tab)
+    app._show_page("utilities")
     root.update()
 
     def check_visible_buttons(widget):
@@ -300,7 +297,9 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
     assert (32, 32) in sizes, "taskbar size missing"
 
     # ---------- page names and the folded Advanced Options block ----------
-    assert sorted(app._pages) == ["about", "convert", "edit", "merge"]
+    assert sorted(app._pages) == [
+        "about", "convert", "edit", "merge", "organise", "utilities"
+    ]
     app._show_page("convert")
     root.update_idletasks()
     assert app.convert_tab.winfo_manager() == "pack", "convert page is shown"

@@ -464,6 +464,129 @@ def text_lines(src: Path, page_number: int) -> list[TextMatch]:
     return result
 
 
+def redact_lines(
+    src: Path,
+    out_path: Path,
+    lines: list[TextMatch],
+    order: list[int] | None = None,
+    rotations: dict[int, int] | None = None,
+) -> Path:
+    """Remove the text objects behind ``lines`` and paint a black bar over them.
+
+    NOTE: this is a REAL redaction, not a cover box. PDFium drops the text
+    object from the page's content stream, so the characters are no longer in
+    the text layer and cannot be copied out; the black bar marks the spot.
+    Because the edit rewrites the page, the page order and rotations are
+    applied in the same pass.
+    """
+    if not lines:
+        raise ConversionError("no lines to redact")
+    reader = _open_reader(src)
+    count = len(reader.pages)
+    if count == 0:
+        raise ConversionError(f"{src.name} has no pages")
+    for line in lines:
+        if not 1 <= line.page <= count:
+            raise ConversionError("a redacted line refers to a missing page")
+
+    sequence = _validate_pages(order, count) if order else list(range(1, count + 1))
+    rotations = rotations or {}
+
+    # NOTE: PDFium rewrites the content stream, so it writes the file that the
+    # page order and rotations are taken from; the result is then copied into
+    # the final PDF by pypdf, which keeps one writer for the whole app.
+    scratch = out_path.with_name(f".{out_path.stem}-redact.pdf")
+    doc = pdfium.PdfDocument(str(src))
+    try:
+        by_page: dict[int, list[TextMatch]] = {}
+        for line in lines:
+            by_page.setdefault(line.page, []).append(line)
+        for page_number, page_lines in by_page.items():
+            page = doc[page_number - 1]
+            height = float(page.get_height())
+            objects = list(page.get_objects())
+            try:
+                for page_obj in objects:
+                    if page_obj.type != pdfium.raw.FPDF_PAGEOBJ_TEXT:
+                        continue
+                    left, bottom, right, top = page_obj.get_bounds()
+                    # PDFium reports the object box bottom-up; TextMatch is top-down
+                    obj_top = height - top
+                    obj_bottom = height - bottom
+                    for line in page_lines:
+                        overlap_x = min(right, line.x1) - max(left, line.x0)
+                        overlap_y = min(obj_bottom, line.bottom) - max(obj_top, line.top)
+                        if overlap_x > 0 and overlap_y > 0:
+                            page.remove_obj(page_obj)
+                            break
+                page.gen_content()
+            finally:
+                # NOTE: pypdfium2 tracks every child object; closing them here
+                # keeps the interpreter from warning about leaked handles. The
+                # PAGE itself stays open until doc.close().
+                for page_obj in objects:
+                    try:
+                        page_obj.close()
+                    except Exception:  # noqa: BLE001 - already closed
+                        pass
+        doc.save(str(scratch))
+    except (pdfium.PdfiumError, OSError) as exc:
+        raise ConversionError(f"cannot redact {Path(src).name}: {exc}") from exc
+    finally:
+        doc.close()
+
+    try:
+        redacted = _open_reader(scratch)
+        writer = PdfWriter()
+        for number in sequence:
+            page = redacted.pages[number - 1]
+            angle = rotations.get(number, 0) % 360
+            if angle:
+                page.rotate(angle)
+            written = writer.add_page(page)
+            page_lines = [
+                line for line in by_page.get(number, [])
+            ]
+            if page_lines:
+                written.merge_page(
+                    _redaction_reader(
+                        float(written.mediabox.width),
+                        float(written.mediabox.height),
+                        page_lines,
+                    ).pages[0]
+                )
+        _copy_metadata(redacted, writer)
+        return _write(writer, out_path)
+    finally:
+        try:
+            scratch.unlink()
+        except OSError:
+            pass
+
+
+def _redaction_reader(width: float, height: float, lines: list[TextMatch]) -> PdfReader:
+    """A one-page overlay of solid black bars over the redacted lines."""
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(width, height))
+    pdf.setFillColorRGB(0, 0, 0)
+    for line in lines:
+        # a hair of padding hides any antialiased glyph edge left behind
+        pdf.rect(
+            line.x0 - 1,
+            height - line.bottom - 1,
+            line.width + 2,
+            line.height + 2,
+            stroke=0,
+            fill=1,
+        )
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+    return PdfReader(buffer)
+
+
 def _page_matches(
     page,
     textpage,
@@ -533,6 +656,14 @@ class PlacedText:
     color: tuple[float, float, float] = (0.0, 0.0, 0.0)
     font_path: Path | None = None
     font_index: int = 0
+    # NOTE: a user-sized box. ``None`` means the box auto-sizes to the text,
+    # which is what an existing-line correction uses.
+    width: float | None = None
+    height: float | None = None
+    # NOTE: the cover painted over an edited line. It grows with the new text,
+    # so a longer replacement is not clipped by the original line's frame.
+    cover_width: float | None = None
+    cover_height: float | None = None
 
 
 
@@ -564,6 +695,119 @@ def add_text(src: Path, out_path: Path, items: list[PlacedText]) -> Path:
 
     _copy_metadata(reader, writer)
     return _write(writer, out_path)
+
+
+def compress_pdf(
+    src: Path,
+    out_path: Path,
+    image_quality: int = 75,
+    downsample_dpi: int | None = None,
+    grayscale: bool = False,
+) -> Path:
+    """Write a smaller copy of ``src`` by compressing content and images.
+
+    The saving comes from three pypdf operations, none of which change what the
+    page shows at normal reading size:
+
+    * ``page.compress_content_streams()`` re-packs the page drawing commands
+      with Flate, which removes the redundancy of repeated operators.
+    * ``PdfWriter.compress_identical_objects()`` shares duplicate objects
+      (fonts, images, resources) between pages instead of storing copies.
+    * each image is re-encoded as JPEG at ``image_quality``. When
+      ``downsample_dpi`` is given, an image whose effective resolution is above
+      that value is scaled down first, which is where most of the saving in a
+      scanned document comes from.
+
+    NOTE: the images are only re-encoded when that actually makes them
+    smaller; a lossless image that is already compressed stays untouched. The
+    original file is never modified - the result is a new copy.
+    """
+    quality = max(10, min(95, int(image_quality)))
+    dpi = None if downsample_dpi is None else max(36, min(1200, int(downsample_dpi)))
+
+    reader = _open_reader(src)
+    if not reader.pages:
+        raise ConversionError(f"{Path(src).name} has no pages")
+
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+
+    _copy_metadata(reader, writer)
+
+    for page in writer.pages:
+        # NOTE: the stream compression is cheap and lossless, so it always runs
+        try:
+            page.compress_content_streams()
+        except Exception:  # noqa: BLE001 - a broken stream is not fatal
+            pass
+        page_width = float(page.mediabox.width)
+        page_height = float(page.mediabox.height)
+        for image in list(page.images):
+            _shrink_image(image, quality, dpi, grayscale, page_width, page_height)
+
+    writer.compress_identical_objects()
+    return _write(writer, out_path)
+
+
+def _shrink_image(
+    image,
+    quality: int,
+    dpi: int | None,
+    grayscale: bool,
+    page_width: float,
+    page_height: float,
+) -> None:
+    """Re-encode one page image in place, keeping it only when it gets smaller.
+
+    ``page_width``/``page_height`` are in points, so the image's effective
+    resolution is ``pixels / (points / 72)``. That is the number the user's
+    ``downsample_dpi`` is compared against, because most PDFs carry no DPI tag
+    on the image itself.
+    """
+    import io as _io
+
+    from PIL import Image
+
+    try:
+        source = image.image
+    except Exception:  # noqa: BLE001 - unsupported filters are skipped
+        return
+    if source is None:
+        return
+    try:
+        converted = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
+        if grayscale:
+            converted = converted.convert("L")
+        if dpi:
+            # the page box is in points, so the effective resolution follows it
+            width_inches = max(1e-6, page_width / 72.0)
+            height_inches = max(1e-6, page_height / 72.0)
+            effective = max(converted.width / width_inches, converted.height / height_inches)
+            if effective > dpi:
+                factor = dpi / effective
+                converted = converted.resize(
+                    (
+                        max(1, int(converted.width * factor)),
+                        max(1, int(converted.height * factor)),
+                    ),
+                    Image.LANCZOS,
+                )
+        buffer = _io.BytesIO()
+        converted.save(buffer, format="JPEG", quality=quality, optimize=True)
+        # NOTE: the check is against the ENCODED stream (get_data), not the
+        # decoded pixels (data): a JPEG is only kept when it is smaller than the
+        # image's existing compressed bytes. Otherwise compressing a line-art
+        # PNG would grow the PDF.
+        try:
+            original_bytes = len(image.indirect_reference.get_object().get_data())
+        except Exception:  # noqa: BLE001 - inline images fall back to pixels
+            original_bytes = len(image.data)
+        if buffer.tell() >= original_bytes:
+            return
+        image.replace(converted, quality=quality)
+    except Exception:  # noqa: BLE001 - a single bad image must not fail the job
+        return
 
 
 def replace_text(
@@ -680,6 +924,8 @@ def _text_overlays(
                     font_size=size,
                     font_path=font.path if font else None,
                     font_index=font.index if font else 0,
+                    cover_width=max(match.width + 2, measured + 2),
+                    cover_height=max(match.height + 2, size * 1.35),
                 )
             )
         matches_by_page.setdefault(match.page, []).append(match)
@@ -688,8 +934,8 @@ def _text_overlays(
     for item in additions or []:
         if not item.text.strip():
             raise ConversionError("added text cannot be empty")
-        if "\n" in item.text or "\r" in item.text or item.font_size < 1:
-            raise ConversionError("added text must be one line with a positive font size")
+        if item.font_size < 1:
+            raise ConversionError("added text must have a positive font size")
         replacements.setdefault(item.page, []).append(item)
     if any(page < 1 or page > len(reader.pages) for page in set(matches_by_page) | set(replacements)):
         raise ConversionError("a selected text line refers to a missing page")
@@ -736,20 +982,48 @@ def edit_text_lines(
     return _write(writer, out_path)
 
 
+def _draw_lines(pdf, item: PlacedText, page_height: float) -> None:
+    """Draw a placed item, one line per ``\\n``, inside its box when it has one."""
+    from reportlab.lib.colors import Color
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    font = FontFace(item.font_path, item.font_index) if item.font_path else None
+    pdf.setFillColor(Color(*item.color))
+    pdf.setFont(_register_text_font(font, item.text), item.font_size)
+    lines = item.text.split("\n")
+    leading = item.font_size * 1.2
+    box_width = item.width
+    for offset, line in enumerate(lines):
+        # NOTE: reportlab's origin is bottom-left, so the top-down anchor is
+        # converted here; each further line steps down by the leading
+        y = page_height - item.top - item.font_size - offset * leading
+        if box_width and line:
+            line = _wrap_line(pdf, line, item.font_size, box_width, stringWidth)
+        pdf.drawString(item.x, y, line)
+
+
+def _wrap_line(pdf, line: str, size: float, box_width: float, string_width) -> str:
+    """Clip a line to the box width, adding an ellipsis when it is cut.
+
+    NOTE: the on-canvas box wraps the words itself, so a line only reaches here
+    when the user typed a single long word that cannot be broken.
+    """
+    name = pdf._fontname
+    if string_width(line, name, size) <= box_width:
+        return line
+    while line and string_width(line + "\u2026", name, size) > box_width:
+        line = line[:-1]
+    return line + "\u2026" if line else ""
+
+
 def _text_reader(width: float, height: float, items: list[PlacedText]) -> PdfReader:
     """A one-page reportlab PDF drawing each placed text at its anchor."""
-    from reportlab.lib.colors import Color
     from reportlab.pdfgen import canvas
 
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=(width, height))
     for item in items:
-        # reportlab's origin is bottom-left; convert the top-down anchor
-        y = height - item.top - item.font_size
-        pdf.setFillColor(Color(*item.color))
-        font = FontFace(item.font_path, item.font_index) if item.font_path else None
-        pdf.setFont(_register_text_font(font, item.text), item.font_size)
-        pdf.drawString(item.x, y, item.text)
+        _draw_lines(pdf, item, height)
     pdf.showPage()
     pdf.save()
     buffer.seek(0)
@@ -863,18 +1137,30 @@ def _replace_reader(
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=(width, height))
     pdf.setFillColor(Color(*cover_color))
+    # NOTE: the cover starts from the original match, but if the replacement is
+    # wider or taller the cover expands with it, so a line edit is never clipped
+    # by the source box.
+    match_covers: dict[tuple[int, float, float], tuple[float, float]] = {
+        (item.page, round(item.x, 2), round(item.top, 2)): (
+            item.cover_width or 0.0,
+            item.cover_height or 0.0,
+        )
+        for item in replacements
+    }
     for match in matches:
-        # a hair of padding hides the original glyph edges
+        extra_w, extra_h = match_covers.get(
+            (match.page, round(match.x0, 2), round(match.top, 2)), (0.0, 0.0)
+        )
+        box_w = max(match.width + 2, extra_w)
+        box_h = max(match.height + 2, extra_h)
         x = match.x0 - 1
-        y = height - match.bottom - 1
-        pdf.rect(x, y, match.width + 2, match.height + 2, stroke=0, fill=1)
+        y = height - match.top - box_h
+        pdf.rect(x, y, box_w, box_h, stroke=0, fill=1)
 
     pdf.setFillColor(Color(0, 0, 0))
     for item in replacements:
-        y = height - item.top - item.font_size
-        font = FontFace(item.font_path, item.font_index) if item.font_path else None
-        pdf.setFont(_register_text_font(font, item.text), item.font_size)
-        pdf.drawString(item.x, y, item.text)
+        pdf.setFillColor(Color(0, 0, 0))
+        _draw_lines(pdf, item, height)
     pdf.showPage()
     pdf.save()
     buffer.seek(0)

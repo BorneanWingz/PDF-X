@@ -1,0 +1,42 @@
+# UTF-8
+#
+# Windows version resources for PDF-X, read by PyInstaller through
+# `version=...` in packaging/pdf_toolbox.spec.
+#
+# NOTE: keep the versions here in step with pdftoolbox.__version__ and
+# pyproject.toml. The four numbers are the Windows form of "0.1.7".
+#
+# For more details about fixed file info 'ffi' see:
+# http://msdn.microsoft.com/en-us/library/ms646997.aspx
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(0, 1, 7, 0),
+    prodvers=(0, 1, 7, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',
+          [
+            StringStruct('CompanyName', 'Dr. Longwin Sii'),
+            StringStruct('FileDescription', 'PDF-X - Portable Offline PDF Toolbox'),
+            StringStruct('FileVersion', '0.1.7.0'),
+            StringStruct('InternalName', 'PDF-X'),
+            StringStruct('LegalCopyright', 'Copyright \u00a9 2026 Dr. Longwin Sii'),
+            StringStruct('OriginalFilename', 'PDF-X.exe'),
+            StringStruct('ProductName', 'PDF-X'),
+            StringStruct('ProductVersion', '0.1.7.0')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

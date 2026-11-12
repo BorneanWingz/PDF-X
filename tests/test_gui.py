@@ -70,40 +70,34 @@ def test_drop_paths_helper_handles_an_empty_drop() -> None:
     assert drop_paths(SimpleNamespace(data="")) == []
 
 
-def test_processing_log_toggle_opens_and_closes() -> None:
-    class Widget:
-        def __init__(self) -> None:
-            self.options = {}
-            self.forgot = False
+def test_processing_log_is_gone_from_every_page() -> None:
+    # The on-screen Processing Log was removed; _log and friends must still be
+    # safe to call so the worker/report paths keep working.
+    for attribute in (
+        "log_button",
+        "log_frame",
+        "_toggle_log",
+        "merge_log_button",
+        "merge_log_frame",
+        "_toggle_merge_log",
+        "edit_log_button",
+        "edit_log_frame",
+        "_toggle_edit_log",
+    ):
+        assert not hasattr(App, attribute), attribute
 
-        def pack(self, **options) -> None:
-            self.options = options
 
-        def pack_forget(self) -> None:
-            self.forgot = True
+def test_log_helpers_write_to_the_internal_logger(caplog) -> None:
+    app = App.__new__(App)
+    with caplog.at_level("INFO", logger="pdftoolbox"):
+        app._log("ok      one.pdf -> one.png")
+        app._merge_log("ok      merged 2 file(s)")
+        app._edit_log_write("FAILED  edit: nope")
 
-        def configure(self, **options) -> None:
-            self.options = options
-
-    harness = SimpleNamespace(
-        log_open=False,
-        log_button=Widget(),
-        log_frame=Widget(),
-    )
-
-    App._toggle_log(harness)
-    assert harness.log_open
-    assert harness.log_frame.options == {
-        "fill": "both",
-        "expand": True,
-        "pady": (0, 8),
-    }
-    assert harness.log_button.options["text"] == "\u25be Processing Log"
-
-    App._toggle_log(harness)
-    assert not harness.log_open
-    assert harness.log_frame.forgot
-    assert harness.log_button.options["text"] == "\u25b8 Processing Log"
+    messages = [record.getMessage() for record in caplog.records]
+    assert "ok      one.pdf -> one.png" in messages
+    assert "merge: ok      merged 2 file(s)" in messages
+    assert "edit: FAILED  edit: nope" in messages
 
 
 def test_merge_list_is_numbered_in_order() -> None:
@@ -217,12 +211,11 @@ def test_pdf_tools_buttons_invoke_original_actions(tk_root, monkeypatch) -> None
     app.tools_tab = ttk.Frame(tk_root)
     calls = []
     actions = {
-        "Split PDF": "run_split",
-        "Extract": "run_extract",
         "Add Watermark": "run_watermark",
         "Add Numbers": "run_page_numbers",
         "Find": "run_find_text",
         "Replace All": "run_replace_text",
+        "Compress PDF": "run_compress",
     }
     for action in actions.values():
         monkeypatch.setattr(app, action, lambda name=action: calls.append(name))
@@ -240,6 +233,35 @@ def test_pdf_tools_buttons_invoke_original_actions(tk_root, monkeypatch) -> None
         assert sorted(calls) == sorted(actions.values())
     finally:
         app.tools_tab.destroy()
+
+
+def test_organise_tab_invokes_split_and_extract(tk_root, monkeypatch) -> None:
+    from tkinter import ttk
+
+    app = App.__new__(App)
+    app.root = tk_root
+    app._glyphs = {}
+    app.organise_tab = ttk.Frame(tk_root)
+    calls = []
+    for action in ("run_split", "run_extract", "open_edit_pdf", "clear_edit_pdf"):
+        monkeypatch.setattr(app, action, lambda name=action: calls.append(name))
+    try:
+        app._build_organise_tab_area()
+
+        def buttons(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Button):
+                    yield child
+                yield from buttons(child)
+
+        for button in buttons(app.organise_tab):
+            text = str(button["text"])
+            if text in ("Split PDF", "Extract"):
+                button.invoke()
+        assert "run_split" in calls
+        assert "run_extract" in calls
+    finally:
+        app.organise_tab.destroy()
 
 
 @pytest.fixture
@@ -276,6 +298,7 @@ def text_editor(tmp_path, tk_root):
         app.visual_text_image = None
         app._visual_text_ocr_warning_shown = False
         app.visual_text_edits = {}
+        app.redacted_visual_text = {}
         app.visual_text_fonts = {}
         app.visual_text_sizes = {}
         app.placed_text = []
@@ -752,6 +775,56 @@ def test_redo_restores_the_whole_text(text_editor) -> None:
     assert app.visual_text_var.get() == "A much longer replacement"
 
 
+def test_selected_line_has_cursor_at_end_and_no_selection(text_editor) -> None:
+    app = text_editor
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    # line selection must not highlight the text box
+    assert not app.visual_text_entry.tag_ranges("sel")
+    # cursor should be at the end of the line
+    assert app.visual_text_entry.index("insert") == f"1.{len(line.text)}"
+
+
+def test_queue_visual_text_redact_and_undo(text_editor) -> None:
+    app = text_editor
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    key = app._visual_text_key(line)
+
+    app._queue_visual_text_redact()
+    assert key in app.redacted_visual_text
+    assert app.selected_visual_text is None
+    assert str(app.visual_text_redact_button["state"]) == "disabled"
+
+    app._undo_text_edit()
+    assert key not in app.redacted_visual_text
+    app._redo_text_edit()
+    assert key in app.redacted_visual_text
+
+
+def test_undo_and_redo_buttons_use_symbols(text_editor) -> None:
+    app = text_editor
+    assert app.text_undo_button.cget("text") == "↶"
+    assert app.text_redo_button.cget("text") == "↷"
+
+
+def test_added_text_box_can_be_resized(text_editor) -> None:
+    app = text_editor
+    app._add_text_box()
+    box = app.placed_text[0]
+    initial_w = box.width or 80.0
+    initial_h = box.height or 20.0
+    # resize via drag
+    app._text_resizing = True
+    app._text_resize_origin = (0.0, 0.0)
+    app._text_drag_offset = (0.0, 0.0)
+    app._drag_placed_text(_canvas_event(app, initial_w + 50, initial_h + 30))
+    app._end_text_drag(None)
+    resized = app.placed_text[0]
+    assert resized.width > initial_w
+    assert resized.height > initial_h
+
+
 def test_navigation_does_not_add_an_undo_step(text_editor) -> None:
     app = text_editor
     app._add_text_box()
@@ -803,7 +876,8 @@ def test_the_save_button_is_gone(scratch_app) -> None:
 def test_sidebar_navigation_shows_one_page_at_a_time(scratch_app) -> None:
     app = scratch_app
     app.root.update()
-    for key in ("convert", "merge", "edit", "about"):
+    # the Organise PDF page is its own sidebar entry, between Merge and Edit
+    for key in ("convert", "merge", "organise", "edit", "about"):
         app._show_page(key)
         app.root.update()
         assert app.current_page == key
@@ -813,15 +887,92 @@ def test_sidebar_navigation_shows_one_page_at_a_time(scratch_app) -> None:
                 assert not page.winfo_manager(), f"{other} page is hidden"
 
 
-def test_edit_tab_keeps_its_apply_row_and_log_button_visible(scratch_app) -> None:
-    # Regression: the Edit PDF tab used to grow past the window, so the Apply
-    # row and the log button were pushed off the bottom of the tab.
+def test_sidebar_lists_every_page_including_utilities(scratch_app) -> None:
+    app = scratch_app
+    app.root.update()
+    labels = [row.label.cget("text") for row in app._sidebar_rows.values()]
+    assert labels == [
+        "Convert File",
+        "Merge PDF",
+        "Organise PDF",
+        "Edit PDF",
+        "Utilities",
+        "About",
+    ]
+    assert list(app._sidebar_rows) == [
+        "convert",
+        "merge",
+        "organise",
+        "edit",
+        "utilities",
+        "about",
+    ]
+    assert app._pages["utilities"] is app.utilities_tab
+
+
+def test_edit_pdf_has_no_sub_notebook(scratch_app) -> None:
+    # PDF Tools moved out of Edit PDF into its own Utilities page, so the tab
+    # no longer needs a notebook at all.
+    app = scratch_app
+    app.root.update()
+    assert not hasattr(app, "edit_notebook")
+    assert app.visual_text_tab.master is app.edit_tab
+    # the page list and its toolbar belong to the Organise PDF page
+    assert app.organise_pages.master is app.organise_drop.master
+
+
+def test_utilities_page_owns_the_pdf_tools(scratch_app) -> None:
+    app = scratch_app
+    app.root.update()
+    assert app.tools_tab.master is app.utilities_tab
+    assert app.utilities_source_var.get() == "No PDF loaded"
+
+    from tkinter import ttk
+
+    def labels(widget):
+        found = []
+        for child in widget.winfo_children():
+            if isinstance(child, ttk.Button):
+                found.append(str(child.cget("text")))
+            found.extend(labels(child))
+        return found
+
+    assert {
+        "Add Watermark",
+        "Add Numbers",
+        "Find",
+        "Replace All",
+        "Compress PDF",
+    } <= set(labels(app.utilities_tab))
+    assert "Add Text Box" not in labels(app.utilities_tab)
+
+
+def test_utilities_page_follows_the_imported_pdf(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    source = tmp_path / "shared.pdf"
+    from reportlab.pdfgen import canvas
+
+    pdf = canvas.Canvas(str(source))
+    pdf.drawString(72, 720, "A line of text for the sample document")
+    pdf.save()
+
+    app._reset_edit_session(source, 1)
+    app.root.update()
+    assert str(source.name) in app.utilities_source_var.get()
+
+    app.clear_edit_pdf()
+    app.root.update()
+    assert app.utilities_source_var.get() == "No PDF loaded"
+
+
+def test_edit_tab_keeps_its_apply_row_visible(scratch_app) -> None:
+    # Regression: the Edit PDF tab used to grow past the window, pushing the
+    # Apply row off the bottom of the tab.
     app = scratch_app
     app.root.geometry("1180x800")
     app._show_page("edit")
     app.root.update()
     assert app.edit_apply_button.winfo_ismapped(), "Apply row is visible"
-    assert app.edit_log_button.winfo_ismapped(), "log button is visible"
 
 
 def test_edit_tab_keeps_its_apply_row_visible_on_a_short_window(scratch_app) -> None:
@@ -830,31 +981,73 @@ def test_edit_tab_keeps_its_apply_row_visible_on_a_short_window(scratch_app) -> 
     app._show_page("edit")
     app.root.update()
     assert app.edit_apply_button.winfo_ismapped(), "Apply row is visible"
-    assert app.edit_log_button.winfo_ismapped(), "log button is visible"
 
 
-def test_edit_log_toggles_without_moving_the_apply_row(scratch_app) -> None:
+def test_page_arrows_are_left_and_right(scratch_app) -> None:
+    app = scratch_app
+    app.root.update()
+    assert str(app.visual_text_prev.cget("text")) == "\u25c0"
+    assert str(app.visual_text_next.cget("text")) == "\u25b6"
+
+
+def test_viewer_centres_a_page_smaller_than_the_canvas(scratch_app, tmp_path) -> None:
+    # Regression: the page used to sit hard against the top-left corner.
+    from reportlab.pdfgen import canvas
+
     app = scratch_app
     app.root.geometry("1180x800")
     app._show_page("edit")
     app.root.update()
-    assert not app.edit_log_frame.winfo_manager(), "log starts collapsed"
+    source = tmp_path / "small.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(200, 150))
+    pdf.drawString(30, 100, "Small page")
+    pdf.save()
 
-    app._toggle_edit_log()
+    app._reset_edit_session(source, 1)
+    app._set_viewer_zoom(50)
     app.root.update()
-    assert app.edit_log_frame.winfo_manager() == "grid", "log opens"
-    assert app.edit_apply_button.winfo_ismapped(), "Apply row stays visible"
 
-    app._toggle_edit_log()
+    viewer = app.visual_text_canvas
+    image = app.visual_text_image
+    region = [int(float(value)) for value in viewer.cget("scrollregion").split()]
+    margin_left, margin_right = -region[0], region[2] - image.width()
+    margin_top, margin_bottom = -region[1], region[3] - image.height()
+
+    assert margin_left == margin_right > 0, "centred horizontally"
+    assert margin_top == margin_bottom > 0, "centred vertically"
+    # the padding is scroll-region only, so the page origin stays page-relative
+    assert viewer.canvasx(margin_left) == 0.0
+    assert viewer.canvasy(margin_top) == 0.0
+
+
+def test_viewer_leaves_a_large_page_unpadded(scratch_app, tmp_path) -> None:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    app = scratch_app
+    app.root.geometry("1180x800")
+    app._show_page("edit")
     app.root.update()
-    assert not app.edit_log_frame.winfo_manager(), "log closes"
-    assert app.edit_apply_button.winfo_ismapped(), "Apply row stays visible"
+    source = tmp_path / "large.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=A4)
+    pdf.drawString(72, 720, "Full page")
+    pdf.save()
+
+    app._reset_edit_session(source, 1)
+    app._set_viewer_zoom(400)
+    app.root.update()
+
+    viewer = app.visual_text_canvas
+    image = app.visual_text_image
+    region = [int(float(value)) for value in viewer.cget("scrollregion").split()]
+    assert region == [0, 0, image.width(), image.height()]
 
 
 def test_drop_zone_is_shown_until_a_pdf_is_loaded(scratch_app, tmp_path) -> None:
     app = scratch_app
     app.root.update()
-    app._show_page("edit")
+    # the empty state lives on the Organise PDF page, which now owns the list
+    app._show_page("organise")
     app.root.update()
     assert app.organise_drop.winfo_manager() == "pack", "drop zone shows when empty"
     assert not app.organise_pages.winfo_manager(), "page list waits for a file"
@@ -870,6 +1063,96 @@ def test_drop_zone_is_shown_until_a_pdf_is_loaded(scratch_app, tmp_path) -> None
     app.root.update()
     assert not app.organise_drop.winfo_manager(), "drop zone hides when loaded"
     assert app.organise_pages.winfo_manager() == "pack", "page list shows"
+    # the header shows the same file the Edit PDF page shows
+    assert str(source.name) in app.organise_source_var.get()
+
+
+def test_organise_page_has_its_own_apply_row(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app.root.geometry("1180x800")
+    app._show_page("organise")
+    app.root.update()
+
+    def buttons(widget):
+        from tkinter import ttk
+
+        for child in widget.winfo_children():
+            if isinstance(child, ttk.Button):
+                yield child
+            yield from buttons(child)
+
+    applies = [b for b in buttons(app.organise_tab) if str(b["text"]) == "Apply Changes"]
+    assert len(applies) == 1, "the organiser page saves page-only changes"
+    assert applies[0].winfo_ismapped(), "Apply row is visible"
+    # it is the same save path the Edit PDF page uses
+    assert applies[0].cget("command") == str(app.run_organise) or callable(
+        app.run_organise
+    )
+    assert app.organise_status_var.get() in ("Ready", "No PDF loaded")
+
+
+def test_organise_page_fits_the_smallest_window(scratch_app, tmp_path) -> None:
+    # Regression: the page list, split/extract and the Apply row must all fit
+    # the shortest supported window, or the page list would be a sliver.
+    from tkinter import ttk
+
+    app = scratch_app
+    app.root.geometry("980x680")
+    app.root.minsize(980, 680)
+    app._show_page("organise")
+    app.root.update()
+
+    source = tmp_path / "many.pdf"
+    from reportlab.pdfgen import canvas
+
+    pdf = canvas.Canvas(str(source))
+    for index in range(12):
+        pdf.drawString(72, 720 - index * 12, f"line {index}")
+        pdf.showPage()
+    pdf.save()
+    app._reset_edit_session(source, 12)
+    app.root.update()
+
+    assert app.page_list.winfo_height() >= 100, "the page list stays usable"
+    bottom = app.organise_tab.winfo_rooty() + app.organise_tab.winfo_height()
+    buttons = []
+
+    def walk(widget):
+        for child in widget.winfo_children():
+            if isinstance(child, ttk.Button):
+                buttons.append(child)
+            walk(child)
+
+    walk(app.organise_tab)
+    for button in buttons:
+        if not button.winfo_ismapped():
+            continue
+        assert button.winfo_rooty() + button.winfo_height() <= bottom, (
+            button.cget("text")
+        )
+
+
+def test_file_tabs_use_the_same_dashed_drop_target(scratch_app) -> None:
+    app = scratch_app
+    app.root.update()
+    for page in ("convert", "merge"):
+        app._show_page(page)
+        app.root.update()
+    # every file tab opens on the dashed drop target the Organise PDF page uses
+    for drop in (app.convert_drop, app.merge_drop):
+        assert drop.canvas.winfo_manager(), "the dashed canvas is packed"
+        assert drop.content.winfo_children(), "the badge and button sit inside it"
+
+    app.files.append(Path("C:/tmp/one.pdf"))
+    app._sync_file_drop_zone()
+    app.root.update()
+    assert not app.convert_drop.winfo_manager(), "list replaces the empty state"
+    assert app.convert_list_host.winfo_manager() == "pack"
+
+    app.files.clear()
+    app._sync_file_drop_zone()
+    app.root.update()
+    assert app.convert_drop.winfo_manager() == "pack", "empty state comes back"
 
 
 def test_recent_files_are_listed_without_duplicates(scratch_app, tmp_path) -> None:

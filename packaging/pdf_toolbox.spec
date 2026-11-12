@@ -14,6 +14,32 @@ ENTRY_CLI = os.path.join(SPEC_DIR, "entry_cli.py")
 SRC_DIR = os.path.join(ROOT, "src")
 # NOTE: multi-resolution icon built from assets/pdf-x.png by scripts/make_icon.py
 ICON = os.path.join(ROOT, "assets", "pdf-x.ico")
+# NOTE: the Windows version resource (file/product version, product name,
+# copyright) lives beside this spec as a VSVersionInfo text file, so Explorer's
+# Properties > Details shows the same version the About page shows
+VERSION_FILE = os.path.join(SPEC_DIR, "version_info.txt")
+
+
+def version_file_for(exe_name):
+    """Write the shared version resource with this exe's OriginalFilename.
+
+    NOTE: PyInstaller's ``version=`` argument takes a PATH, not the resource
+    text, so the patched copy is written beside the source file (git-ignored)
+    and that path is returned. Both executables ship one product version, so
+    they share a single source file; only OriginalFilename differs.
+    """
+    with open(VERSION_FILE, encoding="utf-8") as handle:
+        text = handle.read()
+    text = text.replace(
+        "OriginalFilename', 'PDF-X.exe'", f"OriginalFilename', '{exe_name}'"
+    )
+    # NOTE: the patched copies are scratch input for PyInstaller, not sources
+    target = os.path.join(SPEC_DIR, f"version_info_{exe_name}.txt")
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return target
+
+
 mode = os.environ.get("PDFTOOLBOX_BUILD_MODE", "internal")
 is_internal = mode == "internal"
 
@@ -96,6 +122,7 @@ exe_gui = EXE(
     console=False,
     disable_windowed_traceback=False,
     icon=ICON,
+    version=version_file_for("PDF-X.exe"),
 )
 exe_cli = EXE(
     pyz_cli,
@@ -105,6 +132,7 @@ exe_cli = EXE(
     name="PDF-X-CLI",
     console=True,
     icon=ICON,
+    version=version_file_for("PDF-X-CLI.exe"),
 )
 
 coll = COLLECT(

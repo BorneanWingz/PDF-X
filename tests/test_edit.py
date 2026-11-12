@@ -397,3 +397,53 @@ class TestTextEditing:
         source = _make_pdf(tmp_path / "book.pdf", ["A"])
         with pytest.raises(ConversionError, match="no text"):
             pdf_edit.add_text(source, tmp_path / "x.pdf", [])
+
+
+class TestRedact:
+    def test_redact_lines_removes_text_from_text_layer(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["SECRET token 1234", "keep this line"])
+        lines = pdf_edit.text_lines(source, 1)
+        assert len(lines) == 1
+        # match on the secret token
+        matches = [m for m in lines if "SECRET" in m.text]
+        assert matches
+        out = pdf_edit.redact_lines(source, tmp_path / "redacted.pdf", matches)
+        texts = _page_texts(out)
+        assert "SECRET" not in texts[0]
+
+    def test_redact_rejects_empty(self, tmp_path: Path) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Line"])
+        with pytest.raises(ConversionError, match="no lines to redact"):
+            pdf_edit.redact_lines(source, tmp_path / "out.pdf", [])
+
+
+class TestCompress:
+    def test_compress_reduces_file_with_large_image(self, tmp_path: Path) -> None:
+        from PIL import Image, ImageDraw
+        from reportlab.pdfgen import canvas
+
+        img_path = tmp_path / "large.png"
+        img = Image.new("RGB", (1200, 1600), "white")
+        draw = ImageDraw.Draw(img)
+        # photo-like gradient: JPEG compression drops its size dramatically
+        for y in range(800):
+            for x in range(600):
+                img.putpixel((x, y), ((x * 3) % 256, (y * 5) % 256, (x + y) % 256))
+        img.save(img_path, format="JPEG", quality=95)
+
+        source = tmp_path / "image.pdf"
+        pdf = canvas.Canvas(str(source), pagesize=(595, 842))
+        pdf.drawImage(str(img_path), 0, 0, width=595, height=842)
+        pdf.save()
+
+        original_size = source.stat().st_size
+        out = pdf_edit.compress_pdf(
+            source,
+            tmp_path / "compressed.pdf",
+            image_quality=40,
+            downsample_dpi=72,
+        )
+        assert out.stat().st_size < original_size
+        reader = PdfReader(str(out))
+        assert len(reader.pages) == 1
+

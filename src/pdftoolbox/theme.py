@@ -228,6 +228,17 @@ def _glyph_commands() -> dict[str, list[tuple]]:
             ("poly", [(4, 16), (4, 13), (12, 5), (15, 8), (7, 16)]),
             ("line", 11, 6, 14, 9),
         ],
+        "organise": [
+            ("poly", [(3, 4), (17, 4), (17, 16), (3, 16)]),
+            ("line", 7, 8, 13, 8),
+            ("line", 7, 12, 13, 12),
+        ],
+        "tools": [
+            # a wrench: a diagonal shaft with an open jaw at the top right
+            ("line", 5, 15, 13, 7),
+            ("arc", 9, 1, 9, 9, 120, 330),
+            ("poly", [(12, 3), (17, 3), (17, 8), (14, 6)]),
+        ],
         "about": [
             ("dot", 10, 6, 1.2),
             ("line", 10, 9, 10, 15),

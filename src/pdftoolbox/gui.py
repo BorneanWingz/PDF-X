@@ -7,6 +7,7 @@ never freezes and Tk is only touched from the main thread.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import tkinter as tk
@@ -69,6 +70,7 @@ TextKey = tuple[int, float, float, float, float, str]
 @dataclass
 class TextEditState:
     edits: dict[TextKey, tuple[pdf_edit.TextMatch, str]]
+    redacted: dict[TextKey, pdf_edit.TextMatch]
     fonts: dict[TextKey, FontFace]
     sizes: dict[TextKey, int]
     boxes: list[pdf_edit.PlacedText]
@@ -91,12 +93,20 @@ class App:
         self.edit_rotations: dict[int, int] = {}
         self.visual_text_page = 1
         self.visual_text_total_pages = 0
+        self._text_resizing = False
+        self._text_resize_origin = (0.0, 0.0)
         self.visual_text_lines: list[pdf_edit.TextMatch] = []
         self.visual_text_edits: dict[
             tuple[int, float, float, float, float, str],
             tuple[pdf_edit.TextMatch, str],
         ] = {}
         self.selected_visual_text: pdf_edit.TextMatch | None = None
+        # NOTE: lines queued for real removal. They are kept apart from
+        # visual_text_edits, because a redacted line has no replacement text
+        # and must not be drawn back onto the preview.
+        self.redacted_visual_text: dict[
+            tuple[int, float, float, float, float, str], pdf_edit.TextMatch
+        ] = {}
         self.visual_text_image = None
         self._visual_text_ocr_warning_shown = False
         self.system_fonts = installed_fonts()
@@ -149,21 +159,26 @@ class App:
         self.convert_tab = ttk.Frame(self.content)
         self.merge_tab = ttk.Frame(self.content)
         self.edit_tab = ttk.Frame(self.content)
+        self.organise_tab = ttk.Frame(self.content)
+        self.utilities_tab = ttk.Frame(self.content)
         self.about_tab = ttk.Frame(self.content)
         self._pages = {
             "convert": self.convert_tab,
             "merge": self.merge_tab,
+            "organise": self.organise_tab,
             "edit": self.edit_tab,
+            "utilities": self.utilities_tab,
             "about": self.about_tab,
         }
 
         self._build_file_area()
         self._build_options_area()
         self._build_action_area()
-        self._build_log_area()
         self._build_promo_area()
         self._build_merge_area()
+        self._build_organise_tab_area()
         self._build_edit_area()
+        self._build_utilities_tab_area()
         self._build_about_area()
 
         self._sync_text_history()
@@ -294,7 +309,7 @@ class App:
         self._glyphs = {
             name: theme.draw_glyph(name, 20, master=self.root)
             for name in (
-                "convert", "merge", "edit", "about",
+                "convert", "merge", "organise", "edit", "tools", "about",
                 "up", "down", "rotate_left", "rotate_right",
                 "rotate_180", "delete", "reset", "pdf",
                 "folder", "add",
@@ -313,7 +328,9 @@ class App:
         entries = (
             ("convert", "Convert File", "convert"),
             ("merge", "Merge PDF", "merge"),
+            ("organise", "Organise PDF", "organise"),
             ("edit", "Edit PDF", "edit"),
+            ("utilities", "Utilities", "tools"),
             ("about", "About", "about"),
         )
         for key, text, glyph in entries:
@@ -472,8 +489,45 @@ class App:
             font=("TkDefaultFont", 10, "bold"),
         ).pack(anchor="w", padx=14, pady=(10, 4))
 
-        body = ttk.Frame(frame, style="Card.TFrame")
-        body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+        self.convert_body = ttk.Frame(frame, style="Card.TFrame")
+        self.convert_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+
+        # NOTE: the empty state is the SAME dashed drop target the Organise PDF
+        # page uses, so all three file tabs open the same way
+        self.convert_drop = theme.dashed_drop_zone(
+            self.convert_body,
+            height=190,
+            on_drop=self._on_file_drop,
+        )
+        content = self.convert_drop.content
+        self.convert_drop_badge = theme.draw_pdf_badge(64, master=self.root)
+        tk.Label(
+            content, image=self.convert_drop_badge, background=theme.SURFACE
+        ).pack(pady=(8, 2))
+        tk.Label(
+            content,
+            text="Drop files here or",
+            background=theme.SURFACE,
+            foreground=theme.INK,
+            font=("TkDefaultFont", 11),
+        ).pack()
+        ttk.Button(
+            content,
+            text="Add files",
+            command=self.add_files,
+            style="Accent.TButton",
+        ).pack(pady=6)
+        self.convert_drop_hint = tk.Label(
+            content,
+            text="No files added yet.",
+            background=theme.SURFACE,
+            foreground=theme.MUTED,
+            font=("TkDefaultFont", 9),
+        )
+        self.convert_drop_hint.pack()
+
+        body = ttk.Frame(self.convert_body, style="Card.TFrame")
+        self.convert_list_host = body
 
         self.file_list = tk.Listbox(body, height=6, selectmode="extended")
         self.file_list.pack(side="left", fill="both", expand=True, pady=(0, 2))
@@ -484,7 +538,7 @@ class App:
         self.file_list.configure(yscrollcommand=scroll.set)
 
         # NOTE: the action buttons sit in an icon toolbar under the list, the
-        # same way the Organise Pages tab does it, so the three file lists
+        # same way the Organise PDF page does it, so the three file lists
         # read the same way
         toolbar = tk.Frame(frame, background=theme.SURFACE)
         toolbar.pack(fill="x", padx=14, pady=(0, 12))
@@ -498,6 +552,33 @@ class App:
             button = theme.toolbar_button(toolbar, text, glyph, self._glyphs)
             button.pack(side="left", padx=(0, 18))
             theme.bind_click(button, command)
+        self._sync_file_drop_zone()
+
+    def _sync_file_drop_zone(self) -> None:
+        """Show the dashed drop target when Convert File is empty, list when not."""
+        drop = getattr(self, "convert_drop", None)
+        host = getattr(self, "convert_list_host", None)
+        if drop is None or host is None:
+            return
+        if self.files:
+            drop.pack_forget()
+            host.pack(fill="both", expand=True)
+        else:
+            host.pack_forget()
+            drop.pack(fill="both", expand=True)
+
+    def _sync_merge_drop_zone(self) -> None:
+        """Show the dashed drop target when Merge PDF is empty, list when not."""
+        drop = getattr(self, "merge_drop", None)
+        host = getattr(self, "merge_list_host", None)
+        if drop is None or host is None:
+            return
+        if self.merge_files:
+            drop.pack_forget()
+            host.pack(fill="both", expand=True)
+        else:
+            host.pack_forget()
+            drop.pack(fill="both", expand=True)
 
     def _build_options_area(self) -> None:
         frame = theme.card(self.convert_tab)
@@ -640,32 +721,6 @@ class App:
             side="left", padx=(0, 14)
         )
 
-    def _build_log_area(self) -> None:
-        self.log_open = False
-        self.log_button = ttk.Button(
-            self.convert_tab,
-            text="\u25b8 Processing Log",
-            command=self._toggle_log,
-            style="Ghost.TButton",
-        )
-        self.log_button.pack(anchor="w", pady=(0, 6))
-        frame = theme.card(self.convert_tab)
-        self.log_frame = frame
-        self.log = tk.Text(frame, height=10, wrap="word", state="disabled")
-        self.log.pack(side="left", fill="both", expand=True, padx=14, pady=12)
-        scroll = ttk.Scrollbar(frame, command=self.log.yview)
-        scroll.pack(side="left", fill="y", pady=12)
-        self.log.configure(yscrollcommand=scroll.set)
-
-    def _toggle_log(self) -> None:
-        if self.log_open:
-            self.log_frame.pack_forget()
-            self.log_button.configure(text="\u25b8 Processing Log")
-        else:
-            self.log_frame.pack(fill="both", expand=True, pady=(0, 8))
-            self.log_button.configure(text="\u25be Processing Log")
-        self.log_open = not self.log_open
-
     def _build_promo_area(self) -> None:
         self.promo_label = tk.Label(
             self.convert_tab,
@@ -712,9 +767,47 @@ class App:
         ).pack(anchor="w", padx=14, pady=(10, 4))
 
         body = ttk.Frame(frame, style="Card.TFrame")
+        self.merge_body = body
         body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
 
-        self.merge_list = tk.Listbox(body, height=8, selectmode="extended")
+        # NOTE: same dashed empty state as the Organise PDF page
+        self.merge_drop = theme.dashed_drop_zone(
+            body,
+            height=190,
+            on_drop=self._on_merge_drop,
+        )
+        content = self.merge_drop.content
+        self.merge_drop_badge = theme.draw_pdf_badge(64, master=self.root)
+        tk.Label(
+            content, image=self.merge_drop_badge, background=theme.SURFACE
+        ).pack(pady=(8, 2))
+        tk.Label(
+            content,
+            text="Drop files here or",
+            background=theme.SURFACE,
+            foreground=theme.INK,
+            font=("TkDefaultFont", 11),
+        ).pack()
+        ttk.Button(
+            content,
+            text="Add files",
+            command=self.add_merge_files,
+            style="Accent.TButton",
+        ).pack(pady=6)
+        self.merge_drop_hint = tk.Label(
+            content,
+            text="No files added yet.",
+            background=theme.SURFACE,
+            foreground=theme.MUTED,
+            font=("TkDefaultFont", 9),
+        )
+        self.merge_drop_hint.pack()
+
+        self.merge_list_host = ttk.Frame(body, style="Card.TFrame")
+        list_host = self.merge_list_host
+        list_host.pack(fill="both", expand=True)
+
+        self.merge_list = tk.Listbox(list_host, height=8, selectmode="extended")
         self.merge_list.pack(side="left", fill="both", expand=True, pady=(0, 2))
         self.merge_list.drop_target_register(DND_FILES)
         self.merge_list.dnd_bind("<<Drop>>", self._on_merge_drop)
@@ -723,12 +816,12 @@ class App:
         self.merge_list.bind("<Button-1>", self._on_merge_drag_start, add="+")
         self.merge_list.bind("<B1-Motion>", self._on_merge_drag_motion)
         self.merge_list.bind("<ButtonRelease-1>", self._on_merge_drag_drop)
-        scroll = ttk.Scrollbar(body, command=self.merge_list.yview)
+        scroll = ttk.Scrollbar(list_host, command=self.merge_list.yview)
         scroll.pack(side="left", fill="y", pady=(0, 2))
         self.merge_list.configure(yscrollcommand=scroll.set)
 
         # NOTE: the action buttons sit in an icon toolbar under the list, the
-        # same way the Organise Pages tab does it, so the three file lists
+        # same way the Organise PDF page does it, so the three file lists
         # read the same way
         toolbar = tk.Frame(frame, background=theme.SURFACE)
         toolbar.pack(fill="x", padx=14, pady=(0, 12))
@@ -745,6 +838,7 @@ class App:
             theme.bind_click(button, command)
 
         self._build_merge_output_area()
+        self._sync_merge_drop_zone()
 
     def _build_merge_output_area(self) -> None:
         frame = theme.card(self.merge_tab)
@@ -796,140 +890,129 @@ class App:
             side="left", padx=(0, 14)
         )
 
-        # NOTE: same disclosure pattern as the Convert File log - the frame is
-        # pack_forget() when collapsed so it reserves NO vertical space at all
-        self.merge_log_open = False
-        self.merge_log_button = ttk.Button(
-            self.merge_tab,
-            text="\u25b8 Processing Log",
-            command=self._toggle_merge_log,
-            style="Ghost.TButton",
-        )
-        self.merge_log_button.pack(anchor="w", pady=(0, 6))
-        log_frame = theme.card(self.merge_tab)
-        self.merge_log_frame = log_frame
-        self.merge_log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
-        self.merge_log.pack(side="left", fill="both", expand=True, padx=14, pady=12)
-        log_scroll = ttk.Scrollbar(log_frame, command=self.merge_log.yview)
-        log_scroll.pack(side="left", fill="y", pady=12)
-        self.merge_log.configure(yscrollcommand=log_scroll.set)
-
-    def _toggle_merge_log(self) -> None:
-        if self.merge_log_open:
-            self.merge_log_frame.pack_forget()
-            self.merge_log_button.configure(text="\u25b8 Processing Log")
-        else:
-            self.merge_log_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
-            self.merge_log_button.configure(text="\u25be Processing Log")
-        self.merge_log_open = not self.merge_log_open
     # ---------- edit tab ----------
-
-    def _build_edit_area(self) -> None:
-        """Build the page organiser, visual text editor, and PDF tools."""
+    def _build_organise_tab_area(self) -> None:
+        """Build the standalone Organise PDF page."""
         header = theme.page_header(
-            self.edit_tab,
-            "Edit PDF",
-            "Rearrange an existing PDF: reorder, rotate or delete pages, split "
-            "or extract a range, and add a watermark or page numbers. Changes "
-            "are saved as a new file; the original is untouched.",
+            self.organise_tab,
+            "Organise PDF",
+            "Reorder, rotate, delete, split, or extract pages from a PDF. "
+            "The original file is never overwritten.",
         )
-        # NOTE: this tab uses grid, with the sub-notebook as the only row that
-        # gives up height. With pack, the notebook keeps its REQUESTED height
-        # and squeezes the rows BELOW it - the Apply row and the log button -
-        # instead, so they fell off the bottom of the tab on a short window.
-        # In grid, rowconfigure(minsize=...) reserves those rows and the middle
-        # notebook row is the one that shrinks.
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        self.edit_tab.columnconfigure(0, weight=1)
-        self.edit_tab.rowconfigure(2, weight=1, minsize=80)
+        header.pack(anchor="w", pady=(0, 10))
 
-        source_row = ttk.Frame(self.edit_tab, style="Card.TFrame")
-        source_row.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        self.edit_source_var = tk.StringVar(value="No PDF loaded")
+        source_row = ttk.Frame(self.organise_tab, style="Card.TFrame")
+        source_row.pack(fill="x", pady=(0, 10))
+        self.organise_source_var = tk.StringVar(value="No PDF loaded")
         ttk.Button(
             source_row,
             text="Import PDF",
             command=self.open_edit_pdf,
             style="Accent.TButton",
         ).pack(side="left", padx=14, pady=10)
-        self.edit_source_label = ttk.Label(
-            source_row, textvariable=self.edit_source_var, style="Card.TLabel"
+        self.organise_source_label = ttk.Label(
+            source_row, textvariable=self.organise_source_var, style="Card.TLabel"
         )
-        self.edit_source_label.pack(side="left", padx=14)
-        # NOTE: Clear parks at the END of the row (side="right"), matching where
-        # the source file label ends, so it reads as "drop this file" rather
-        # than as another way to import one
-        self.edit_clear_button = ttk.Button(
+        self.organise_source_label.pack(side="left", padx=14)
+        self.organise_clear_button = ttk.Button(
             source_row, text="Clear", command=self.clear_edit_pdf, style="Card.TButton"
         )
+        self.organise_clear_button.pack(side="right", padx=14)
+
+        body = ttk.Frame(self.organise_tab, style="Card.TFrame")
+        body.pack(fill="both", expand=True, pady=(0, 6))
+        self.organise_drop_host = body
+        self._build_organise_area()
+        self._build_organise_split_extract_area()
+
+    def _build_organise_split_extract_area(self) -> None:
+        """Build split, extract, and the Apply row below the page organiser."""
+        tools = ttk.Frame(self.organise_tab, style="Card.TFrame")
+        tools.pack(fill="x")
+        self._build_split_area(tools)
+
+        # NOTE: the page list changes are only in memory until they are written.
+        # Apply writes them with the same run_organise job the Edit PDF page
+        # uses, so one document has one save path whichever page it came from.
+        row = theme.card(self.organise_tab)
+        row.pack(fill="x", pady=(2, 0))
+        ttk.Button(
+            row,
+            text="Apply Changes",
+            command=self.run_organise,
+            style="Accent.TButton",
+        ).pack(side="left", padx=14, pady=8)
+        ttk.Label(
+            row,
+            text="Saves the page order, rotations and deletions as a new PDF.",
+            style="CardMuted.TLabel",
+        ).pack(side="left")
+        self.organise_status_var = tk.StringVar(value="Ready")
+        ttk.Label(
+            row, textvariable=self.organise_status_var, style="Card.TLabel"
+        ).pack(side="right", padx=14)
+
+
+
+    def _build_edit_area(self) -> None:
+        """Build the page organiser, visual text editor, and PDF tools."""
+        header = theme.page_header(
+            self.edit_tab,
+            "Edit PDF",
+            "Edit the text of an existing PDF: correct a line, add a text box, "
+            "or redact it. Page order, splitting and extraction live on the "
+            "Organise PDF page. Changes are saved as a new file; the original "
+            "is untouched.",
+        )
+        header.pack(anchor="w", pady=(0, 10))
+
+        source_row = ttk.Frame(self.edit_tab, style="Card.TFrame")
+        source_row.pack(fill="x", pady=(0, 10))
+        self.edit_source_var = tk.StringVar(value="No PDF loaded")
+        ttk.Button(source_row, text="Import PDF", command=self.open_edit_pdf,
+                   style="Accent.TButton").pack(side="left", padx=14, pady=10)
+        self.edit_source_label = ttk.Label(source_row, textvariable=self.edit_source_var,
+                                           style="Card.TLabel")
+        self.edit_source_label.pack(side="left", padx=14)
+        self.edit_clear_button = ttk.Button(source_row, text="Clear",
+                                            command=self.clear_edit_pdf,
+                                            style="Card.TButton")
         self.edit_clear_button.pack(side="right", padx=14)
 
-        # minsize=80 keeps the Organise page list / Edit Text viewer usable; the
-        # sub-notebook is the ONLY row that gives up height when the window is
-        # resized down, so the rows below it never disappear
-        self.edit_notebook = ttk.Notebook(self.edit_tab)
-        self.edit_notebook.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
-        # NOTE: a notebook is as tall as its TALLEST tab, so the tab row that
-        # holds it asks for that height and the rows below get squeezed. The
-        # notebook is given the room the tab actually has, which is what lets
-        # the document editor fill the space.
-        self.edit_tab.bind("<Configure>", lambda _event: self._schedule_fit())
-        self.organise_tab = ttk.Frame(self.edit_notebook)
-        self.visual_text_tab = ttk.Frame(self.edit_notebook)
-        self.tools_tab = ttk.Frame(self.edit_notebook)
-        self.edit_notebook.add(self.organise_tab, text="Organise Pages")
-        self.edit_notebook.add(self.visual_text_tab, text="Edit Text")
-        self.edit_notebook.add(self.tools_tab, text="PDF Tools")
-
-        self._build_organise_area()
+        # NOTE: the text editor gets its own frame so it can keep its grid
+        # layout (a single row that takes the spare height) while the page
+        # itself is packed. Mixing pack and grid in one container is an error.
+        self.visual_text_tab = ttk.Frame(self.edit_tab)
+        self.visual_text_tab.pack(fill="both", expand=True)
         self._build_visual_text_area()
-        self._build_pdf_tools_area()
         self._build_edit_output_area()
 
-    def _schedule_fit(self) -> None:
-        """Fit the sub-notebook once the layout has settled.
-
-        NOTE: the fit runs after the event loop goes idle, so the tab already
-        has its final height. Doing it inside the Configure event used the
-        height from before the resize, which was stale.
-        """
-        self.root.after_idle(self._fit_edit_notebook)
-
-    def _fit_edit_notebook(self) -> None:
-        """Give the sub-notebook the room the Edit tab has spare.
-
-        NOTE: a notebook asks for the height of its tallest tab, so the row
-        holding it reserved that space and pushed the rows below - the Apply
-        button and the log - off the bottom of the tab. The notebook is resized
-        to the height the tab actually has, so the document editor fills the
-        space that is really there.
-        """
-        notebook = getattr(self, "edit_notebook", None)
-        tab = getattr(self, "edit_tab", None)
-        if notebook is None or tab is None:
-            return
-        tab_height = tab.winfo_height()
-        if tab_height <= 1:
-            return
-        reserved = 0
-        for child in tab.winfo_children():
-            if child is notebook or not child.winfo_manager():
-                continue
-            if child.grid_info().get("row") == 2:
-                continue
-            reserved += child.winfo_reqheight()
-        target = max(120, tab_height - reserved - 20)
-        if notebook.winfo_height() != target:
-            # NOTE: the notebook computes its own requested height from its
-            # tallest tab, so an explicit height is only honoured when the
-            # notebook stops propagating that request upwards
-            notebook.configure(height=target)
-            notebook.grid_propagate(False)
+    def _build_utilities_tab_area(self) -> None:
+        """Build the standalone Utilities page using the shared edit source."""
+        header = theme.page_header(
+            self.utilities_tab,
+            "Utilities",
+            "Add watermarks or page numbers, find and replace text, or compress a PDF.",
+        )
+        header.pack(anchor="w", pady=(0, 10))
+        source_row = ttk.Frame(self.utilities_tab, style="Card.TFrame")
+        source_row.pack(fill="x", pady=(0, 10))
+        self.utilities_source_var = tk.StringVar(value="No PDF loaded")
+        ttk.Button(source_row, text="Import PDF", command=self.open_edit_pdf,
+                   style="Accent.TButton").pack(side="left", padx=14, pady=10)
+        ttk.Label(source_row, textvariable=self.utilities_source_var,
+                  style="Card.TLabel").pack(side="left", padx=14)
+        ttk.Button(source_row, text="Clear", command=self.clear_edit_pdf,
+                   style="Card.TButton").pack(side="right", padx=14)
+        self.tools_tab = ttk.Frame(self.utilities_tab)
+        self.tools_tab.pack(fill="both", expand=True)
+        self._build_pdf_tools_area()
 
     def _build_organise_area(self) -> None:
         """The drop zone, the page list, and the icon toolbar."""
+        host = getattr(self, "organise_drop_host", None) or self.organise_tab
         # ---- the drop zone shown when no PDF is loaded ----
-        self.organise_drop = theme.card(self.organise_tab)
+        self.organise_drop = theme.card(host)
         zone = theme.dashed_drop_zone(
             self.organise_drop,
             height=260,
@@ -965,7 +1048,7 @@ class App:
         self.organise_drop_hint.pack()
 
         # ---- the page list ----
-        self.organise_pages = theme.card(self.organise_tab)
+        self.organise_pages = theme.card(host)
         frame = self.organise_pages
         ttk.Label(
             frame,
@@ -1013,12 +1096,15 @@ class App:
             value="Select a page, then use the buttons."
         )
         ttk.Label(
-            self.organise_tab, textvariable=self.page_hint_var, style="CardMuted.TLabel"
+            host, textvariable=self.page_hint_var, style="CardMuted.TLabel"
         ).pack(anchor="w", pady=(0, 8))
 
     def _build_edit_output_area(self) -> None:
         frame = theme.card(self.edit_tab)
-        frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        # NOTE: expand=True hands the window's spare height to the text editor,
+        # which is packed above; a plain fill="x" row would swallow it instead
+        # and the page viewer would never grow on a taller window.
+        frame.pack(fill="x", expand=True, pady=(0, 10))
         frame.columnconfigure(3, weight=1)
 
         ttk.Label(
@@ -1076,37 +1162,6 @@ class App:
             row=3, column=3, sticky="e", padx=(8, 14), pady=(8, 10)
         )
 
-        # NOTE: the log frame is gridded at row 6, so hiding it with
-        # grid_remove() would leave an empty row behind. It is therefore kept
-        # in its own row and the whole row collapses when the log is closed.
-        self.edit_log_open = False
-        self.edit_log_button = ttk.Button(
-            self.edit_tab,
-            text="\u25b8 Processing Log",
-            command=self._toggle_edit_log,
-            style="Ghost.TButton",
-        )
-        self.edit_log_button.grid(row=4, column=0, sticky="w", pady=(0, 4))
-        log_frame = theme.card(self.edit_tab)
-        self.edit_log_frame = log_frame
-        self.edit_log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
-        self.edit_log.pack(side="left", fill="both", expand=True, padx=14, pady=12)
-        log_scroll = ttk.Scrollbar(log_frame, command=self.edit_log.yview)
-        log_scroll.pack(side="left", fill="y", pady=12)
-        self.edit_log.configure(yscrollcommand=log_scroll.set)
-
-    def _toggle_edit_log(self) -> None:
-        if self.edit_log_open:
-            self.edit_log_frame.grid_remove()
-            self.edit_log_button.configure(text="\u25b8 Processing Log")
-        else:
-            # NOTE: the log lives BELOW the Apply row, so opening it must not
-            # push that row out of the tab. The row it occupies is reserved
-            # from the start and the notebook gives up the height instead.
-            self.edit_log_frame.grid(row=5, column=0, sticky="ew", pady=(0, 8))
-            self.edit_log_button.configure(text="\u25be Processing Log")
-        self.edit_log_open = not self.edit_log_open
-
     def _build_pdf_tools_area(self) -> None:
         self.tools_tab.columnconfigure(0, weight=1, uniform="tools")
         self.tools_tab.columnconfigure(1, weight=1, uniform="tools")
@@ -1114,58 +1169,71 @@ class App:
         left.grid(row=0, column=0, sticky="nsew", padx=(6, 3))
         right = ttk.Frame(self.tools_tab)
         right.grid(row=0, column=1, sticky="nsew", padx=(3, 6))
-        self._build_split_area(left)
+        # NOTE: split and extract moved to the Organise PDF page, which owns the
+        # page list they act on
         self._build_replace_area(left)
         self._build_stamp_area(right)
+        self._build_compress_area(right)
 
     def _build_split_area(self, parent: ttk.Frame) -> None:
+        """Split and extract, side by side in one card.
+
+        NOTE: they are two halves of one job - take pages out of the document -
+        so they share a card and a row. Stacking them vertically cost ~110 px
+        that the page list needs on a short window.
+        """
         frame = theme.card(parent)
-        frame.pack(fill="x", pady=(0, 6))
+        frame.pack(fill="x", pady=(0, 4))
+        frame.columnconfigure(0, weight=1, uniform="split")
+        frame.columnconfigure(1, weight=1, uniform="split")
+
+        split = ttk.Frame(frame, style="Card.TFrame")
+        split.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=(6, 6))
         ttk.Label(
-            frame,
+            split,
             text="Split every N pages",
             style="Card.TLabel",
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(8, 3))
-        ttk.Label(frame, text="Pages per file:", style="Card.TLabel").grid(
-            row=1, column=0, sticky="w", padx=12, pady=1
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        ttk.Label(split, text="Pages per file:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w"
         )
         self.split_every_var = tk.StringVar(value="1")
         ttk.Spinbox(
-            frame, from_=1, to=1000, width=6, textvariable=self.split_every_var
-        ).grid(row=1, column=1, sticky="w", padx=(4, 0), pady=1)
+            split, from_=1, to=1000, width=6, textvariable=self.split_every_var
+        ).grid(row=1, column=1, sticky="w", padx=(4, 0))
         ttk.Button(
-            frame, text="Split PDF", command=self.run_split, style="Card.TButton"
-        ).grid(row=1, column=2, sticky="w", padx=8, pady=1)
+            split, text="Split PDF", command=self.run_split, style="Card.TButton"
+        ).grid(row=1, column=2, sticky="w", padx=(8, 0))
         ttk.Label(
-            frame,
+            split,
             text="One output file per chunk.",
             style="CardMuted.TLabel",
-        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=12, pady=(1, 7))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
-        extract = theme.card(parent)
-        extract.pack(fill="x", pady=(0, 6))
+        extract = ttk.Frame(frame, style="Card.TFrame")
+        extract.grid(row=0, column=1, sticky="nsew", padx=(8, 14), pady=(6, 6))
         ttk.Label(
             extract,
             text="Extract a page range",
             style="Card.TLabel",
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(8, 3))
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         ttk.Label(extract, text="Pages:", style="Card.TLabel").grid(
-            row=1, column=0, sticky="w", padx=14, pady=2
+            row=1, column=0, sticky="w"
         )
         self.extract_pages_var = tk.StringVar(value="")
-        ttk.Entry(extract, textvariable=self.extract_pages_var, width=18).grid(
-            row=1, column=1, sticky="w", padx=(4, 0), pady=2
+        ttk.Entry(extract, textvariable=self.extract_pages_var, width=12).grid(
+            row=1, column=1, sticky="w", padx=(4, 0)
         )
         ttk.Button(
             extract, text="Extract", command=self.run_extract, style="Card.TButton"
-        ).grid(row=1, column=2, sticky="w", padx=8, pady=1)
+        ).grid(row=1, column=2, sticky="w", padx=(8, 0))
         ttk.Label(
             extract,
             text="1-based, e.g. 1-3,5; kept in the given order.",
             style="CardMuted.TLabel",
-        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=12, pady=(1, 7))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
     def _build_stamp_area(self, parent: ttk.Frame) -> None:
         mark = theme.card(parent)
@@ -1229,6 +1297,52 @@ class App:
             style="CardMuted.TLabel",
         ).grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 8))
 
+    def _build_compress_area(self, parent: ttk.Frame) -> None:
+        """The Compress PDF card: quality, optional downsampling, and grayscale."""
+        frame = theme.card(parent)
+        frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            frame,
+            text="Compress PDF",
+            style="Card.TLabel",
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(8, 3))
+        ttk.Label(frame, text="Image quality:", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", padx=12, pady=2
+        )
+        self.compress_quality_var = tk.StringVar(value="75")
+        ttk.Spinbox(
+            frame, from_=10, to=95, width=6, textvariable=self.compress_quality_var
+        ).grid(row=1, column=1, sticky="w", padx=(4, 0), pady=2)
+        ttk.Label(frame, text="Downsample:", style="Card.TLabel").grid(
+            row=2, column=0, sticky="w", padx=12, pady=2
+        )
+        # NOTE: "Off" keeps the original pixels and only re-encodes the images,
+        # which is the safe choice for a document that is mostly text
+        self.compress_dpi_var = tk.StringVar(value="Off")
+        ttk.Combobox(
+            frame,
+            textvariable=self.compress_dpi_var,
+            state="readonly",
+            width=10,
+            values=["Off", "72 dpi", "96 dpi", "150 dpi", "200 dpi", "300 dpi"],
+        ).grid(row=2, column=1, sticky="w", padx=(4, 0), pady=2)
+        self.compress_grayscale_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            frame,
+            text="Grayscale images",
+            variable=self.compress_grayscale_var,
+            style="Card.TCheckbutton",
+        ).grid(row=3, column=1, sticky="w", padx=(4, 0), pady=(0, 2))
+        ttk.Button(
+            frame, text="Compress PDF", command=self.run_compress, style="Card.TButton"
+        ).grid(row=1, column=2, rowspan=3, sticky="n", padx=8, pady=2)
+        ttk.Label(
+            frame,
+            text="  Re-packs the page streams and re-encodes images; the result is a new file.",
+            style="CardMuted.TLabel",
+        ).grid(row=4, column=0, columnspan=3, sticky="w", padx=12, pady=(2, 8))
+
     def _build_visual_text_area(self) -> None:
         # NOTE: the tab is laid out with GRID, not pack, so the viewer row can
         # take every spare pixel. With pack the canvas kept its requested
@@ -1247,20 +1361,20 @@ class App:
         font_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 2))
         self.visual_text_page_var = tk.StringVar(value="Page 0 of 0")
         self.visual_text_prev = ttk.Button(
-            nav, text="Previous", command=lambda: self._navigate_visual_text(-1)
+            nav, text="◀", width=3, command=lambda: self._navigate_visual_text(-1)
         )
         self.visual_text_prev.pack(side="left")
         ttk.Label(nav, textvariable=self.visual_text_page_var).pack(side="left", padx=8)
         self.visual_text_next = ttk.Button(
-            nav, text="Next", command=lambda: self._navigate_visual_text(1)
+            nav, text="▶", width=3, command=lambda: self._navigate_visual_text(1)
         )
         self.visual_text_next.pack(side="left")
         self.text_undo_button = ttk.Button(
-            nav, text="Undo", command=self._undo_text_edit, state="disabled"
+            nav, text="↶", width=3, command=self._undo_text_edit, state="disabled"
         )
         self.text_undo_button.pack(side="left", padx=(12, 0))
         self.text_redo_button = ttk.Button(
-            nav, text="Redo", command=self._redo_text_edit, state="disabled"
+            nav, text="↷", width=3, command=self._redo_text_edit, state="disabled"
         )
         self.text_redo_button.pack(side="left", padx=(4, 0))
 
@@ -1282,6 +1396,7 @@ class App:
         self.visual_text_canvas.configure(
             xscrollcommand=horizontal.set, yscrollcommand=vertical.set
         )
+        self.visual_text_canvas.bind("<Configure>", lambda _event: self._center_viewer())
         self.visual_text_canvas.bind("<Button-1>", self._visual_text_click)
         self.visual_text_canvas.bind("<B1-Motion>", self._drag_placed_text)
         self.visual_text_canvas.bind("<ButtonRelease-1>", self._end_text_drag)
@@ -1399,6 +1514,19 @@ class App:
             lambda event: self._scroll_placed_text(event),
             add="+",
         )
+        # NOTE: the Text widget covers the box on the page, so a press on it
+        # must also start a move; otherwise the box could not be dragged by its
+        # middle, only by the dashed border.
+        self.placed_text_entry.bind(
+            "<B1-Motion>", lambda event: self._drag_from_widget(event), add="+"
+        )
+        self.placed_text_entry.bind(
+            "<ButtonRelease-1>", lambda event: self._end_text_drag(event), add="+"
+        )
+        # NOTE: a press inside the Text widget (the box's own middle) selects
+        # the box and arms a move. Without this the canvas never saw the click
+        # - the widget swallows it - which is why Remove Box appeared dead.
+        self.placed_text_entry.bind("<Button-1>", self._on_box_text_press, add="+")
         self.visual_text_entry.configure(state="disabled")
         self.visual_text_queue_button = ttk.Button(
             editor,
@@ -1407,6 +1535,13 @@ class App:
             state="disabled",
         )
         self.visual_text_queue_button.pack(side="left", padx=(6, 0))
+        self.visual_text_redact_button = ttk.Button(
+            editor,
+            text="Redact Line",
+            command=self._queue_visual_text_redact,
+            state="disabled",
+        )
+        self.visual_text_redact_button.pack(side="left", padx=(4, 0))
         # NOTE: the box and the variable are kept in step both ways: typing in
         # the box updates the variable, and setting the variable (for a
         # selected line or box) rewrites the box
@@ -1501,11 +1636,23 @@ class App:
         ttk.Label(info, text=__version__, style="Card.TLabel").grid(
             row=1, column=1, sticky="w", padx=(8, 0), pady=2
         )
+        # NOTE: the README link sits directly under the version line so the
+        # release notes for this build are one click away
+        readme_link = tk.Label(
+            info,
+            text="Readme",
+            fg=theme.ACCENT,
+            background=theme.SURFACE,
+            cursor="hand2",
+            font=("TkDefaultFont", 9, "underline"),
+        )
+        readme_link.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 2))
+        readme_link.bind("<Button-1>", self._open_readme_link)
         ttk.Label(
             info,
             text="No upload, no network, no admin rights: everything runs offline.",
             style="CardMuted.TLabel",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
 
         coffee = ttk.Frame(self.about_tab)
         coffee.pack(side="bottom", anchor="w", pady=(0, 10))
@@ -1622,6 +1769,7 @@ class App:
         self.visual_text_total_pages = count
         self._visual_text_ocr_warning_shown = False
         self.visual_text_edits.clear()
+        getattr(self, "redacted_visual_text", {}).clear()
         self.visual_text_fonts.clear()
         self.visual_text_sizes.clear()
         self.placed_text.clear()
@@ -1629,6 +1777,8 @@ class App:
         self.selected_visual_text = None
         if source is None:
             self.edit_source_var.set("No PDF loaded")
+            self._set_organise_source("No PDF loaded")
+            self._set_organise_status("No PDF loaded")
             self.visual_text_lines = []
             # NOTE: dropping the PhotoImage reference frees the preview; the
             # canvas is emptied first so nothing can be drawn from the old page
@@ -1642,6 +1792,8 @@ class App:
             self._show_drop_zone(True)
         else:
             self.edit_source_var.set(f"{source.name}  ({count} pages)")
+            self._set_organise_source(f"{source.name}  ({count} pages)")
+            self._set_organise_status("Ready")
             self._remember_dir(source.resolve().parent)
             self._remember_recent(source)
             self.edit_status_var.set("Ready")
@@ -1654,6 +1806,17 @@ class App:
         self._text_redo.clear()
         self._sync_text_history()
         self._update_visual_text_nav()
+
+    def _set_organise_source(self, text: str) -> None:
+        for attr in ("organise_source_var", "utilities_source_var"):
+            var = getattr(self, attr, None)
+            if var is not None:
+                var.set(text)
+
+    def _set_organise_status(self, text: str) -> None:
+        var = getattr(self, "organise_status_var", None)
+        if var is not None:
+            var.set(text)
 
     def _show_drop_zone(self, visible: bool) -> None:
         """Show the drop zone when no PDF is loaded, the page list once one is.
@@ -1713,6 +1876,7 @@ class App:
     def _text_edit_state(self) -> TextEditState:
         return TextEditState(
             edits=self.visual_text_edits.copy(),
+            redacted=getattr(self, "redacted_visual_text", {}).copy(),
             fonts=self.visual_text_fonts.copy(),
             sizes=self.visual_text_sizes.copy(),
             boxes=self.placed_text.copy(),
@@ -1737,6 +1901,7 @@ class App:
 
     def _restore_text_edit(self, state: TextEditState) -> None:
         self.visual_text_edits = state.edits.copy()
+        self.redacted_visual_text = getattr(state, "redacted", {}).copy()
         self.visual_text_fonts = state.fonts.copy()
         self.visual_text_sizes = state.sizes.copy()
         self.placed_text = state.boxes.copy()
@@ -1755,10 +1920,14 @@ class App:
         # rewritten here; the trace that normally keeps it in step is muted
         # while the state is being restored
         self._set_editor_text(state.text)
-        selected = state.selected_line is not None or state.selected_box is not None
+        selected_line = state.selected_line is not None
+        selected = selected_line or state.selected_box is not None
         self.visual_text_entry.configure(state="normal" if selected else "disabled")
         self.visual_text_queue_button.configure(
-            state="normal" if state.selected_line is not None else "disabled"
+            state="normal" if selected_line else "disabled"
+        )
+        self.visual_text_redact_button.configure(
+            state="normal" if selected_line else "disabled"
         )
         self._load_visual_text_page()
         # NOTE: the restored state becomes the current one, so the next edit
@@ -1810,10 +1979,81 @@ class App:
     def _viewer_scale(self) -> float:
         """The canvas-to-PDF scale factor, e.g. 1.0 at 100% zoom."""
         return getattr(self, "_viewer_zoom", 100) / 100.0
+    def _draw_visual_text_replacement(self, draw, match, replacement, scale, image_font) -> None:
+        """Paint a line draft, expanding its white cover past the original box.
 
-    def _load_visual_text_page(self) -> None:
+        NOTE: the baseline maths mirror the engine (baseline = top + size), so
+        the preview and the saved PDF line up. A replacement longer than the
+        original line is not clipped: the cover grows with the text.
+        """
+        key = self._visual_text_key(match)
+        face = self.visual_text_fonts.get(key)
+        try:
+            size = int(self.visual_text_sizes.get(key, max(4, round(match.height * 0.82))))
+        except (TypeError, ValueError):
+            size = max(4, round(match.height * 0.82))
+        size_px = max(1, round(size * scale))
+        font = image_font.truetype(str(face.path), size_px, index=face.index) if face else image_font.load_default()
+        text = replacement or ""
+        baseline = (match.x0 * scale, (match.top + size) * scale)
+        if text:
+            box = draw.textbbox(baseline, text, font=font, anchor="ls")
+            right = max(match.x1 * scale + 2, box[2])
+            bottom = max(match.bottom * scale + 2, box[3])
+        else:
+            right = match.x1 * scale + 2
+            bottom = match.bottom * scale + 2
+        draw.rectangle(
+            (match.x0 * scale - 1, match.top * scale - 1, right, bottom), fill="white"
+        )
+        if text:
+            draw.text(baseline, text, fill="black", font=font, anchor="ls")
+
+
+
+    def _center_viewer(self, keep_x: float | None = None, keep_y: float | None = None) -> None:
+        """Centre the page in the viewer, padding the scroll region if needed.
+
+        NOTE: the page image always sits at canvas (0, 0), so ``canvasx()`` and
+        ``canvasy()`` stay page-relative and every click, drag and resize keeps
+        using plain PDF-point maths. Centring is done by extending the scroll
+        region past the page on each side by the spare space, which leaves the
+        page in the middle of the viewport when it is smaller than the canvas
+        and simply scrolls as before when it is larger.
+        """
+        image = getattr(self, "visual_text_image", None)
+        if image is None:
+            return
+        canvas = self.visual_text_canvas
+        canvas_width = canvas.winfo_width()
+        canvas_height = canvas.winfo_height()
+        if canvas_width <= 1 or canvas_height <= 1:
+            return
+        if keep_x is None:
+            keep_x = canvas.xview()[0]
+        if keep_y is None:
+            keep_y = canvas.yview()[0]
+        margin_x = max(0, (canvas_width - image.width()) // 2)
+        margin_y = max(0, (canvas_height - image.height()) // 2)
+        canvas.configure(
+            scrollregion=(
+                -margin_x,
+                -margin_y,
+                image.width() + margin_x,
+                image.height() + margin_y,
+            )
+        )
+        # NOTE: when the page is smaller than the viewer there is nothing to
+        # scroll to, so the (0, 0) view already shows it centred; a larger page
+        # keeps the scroll fraction it had before the resize.
+        canvas.xview_moveto(keep_x)
+        canvas.yview_moveto(keep_y)
+
+    def _load_visual_text_page(self, preserve_view: bool = True) -> None:
         if self.edit_source is None:
             return
+        old_x = self.visual_text_canvas.xview()[0] if preserve_view else 0.0
+        old_y = self.visual_text_canvas.yview()[0] if preserve_view else 0.0
         from PIL import ImageDraw, ImageFont, ImageTk
         from .engines import pdf_render
 
@@ -1836,10 +2076,12 @@ class App:
             self.visual_text_status_var.set(str(exc))
             return
 
+        rendered_keys: set[tuple[int, float, float, float, float, str]] = set()
         draw = ImageDraw.Draw(image)
-        for match, replacement in self.visual_text_edits.values():
+        for match in getattr(self, "redacted_visual_text", {}).values():
             if match.page != self.visual_text_page:
                 continue
+            rendered_keys.add(self._visual_text_key(match))
             draw.rectangle(
                 (
                     match.x0 * scale - 1,
@@ -1847,23 +2089,26 @@ class App:
                     match.x1 * scale + 1,
                     match.bottom * scale + 1,
                 ),
-                fill="white",
+                fill="black",
             )
-            if replacement:
-                face = self.visual_text_fonts.get(self._visual_text_key(match))
-                try:
-                    size = self.visual_text_sizes[self._visual_text_key(match)]
-                    font = ImageFont.truetype(str(face.path), size, index=face.index) if face else ImageFont.load_default()
-                except OSError as exc:
-                    self.visual_text_status_var.set(f"Cannot load font: {exc}")
-                    return
-                draw.text(
-                    (match.x0 * scale, match.top * scale + size),
-                    replacement,
-                    fill="black",
-                    font=font,
-                    anchor="ls",
-                )
+        for match, replacement in self.visual_text_edits.values():
+            if match.page != self.visual_text_page:
+                continue
+            rendered_keys.add(self._visual_text_key(match))
+            self._draw_visual_text_replacement(draw, match, replacement, scale, ImageFont)
+
+        # A selected line is a live draft even before Queue Change is pressed.
+        # Render it with the current font and size so the controls work on first
+        # selection and long edits are visible beyond the original bounds.
+        selected = self.selected_visual_text
+        if selected is not None and self._visual_text_key(selected) not in rendered_keys:
+            self._draw_visual_text_replacement(
+                draw,
+                selected,
+                self.visual_text_var.get(),
+                scale,
+                ImageFont,
+            )
 
         if self.selected_visual_text is not None:
             selected = self.selected_visual_text
@@ -1883,14 +2128,10 @@ class App:
         self.visual_text_canvas.create_image(
             0, 0, anchor="nw", image=self.visual_text_image
         )
-        self.visual_text_canvas.configure(
-            scrollregion=(0, 0, image.width, image.height)
-        )
-        # NOTE: the view starts at the TOP of the page. Without this the
-        # canvas keeps whatever scroll position it had, so a reloaded page
-        # could open in the middle of the document.
-        self.visual_text_canvas.xview_moveto(0.0)
-        self.visual_text_canvas.yview_moveto(0.0)
+        # NOTE: the view is restored to where it was, so selecting a line or
+        # changing its font does not throw the page back to the top. Only a
+        # new page or a new document starts at the top.
+        self._center_viewer(old_x if preserve_view else 0.0, old_y if preserve_view else 0.0)
         self._draw_placed_text()
         self._update_visual_text_nav()
 
@@ -1943,7 +2184,8 @@ class App:
             self._updating_text_controls = False
         self.visual_text_entry.configure(state="disabled")
         self.visual_text_queue_button.configure(state="disabled")
-        self._load_visual_text_page()
+        self.visual_text_redact_button.configure(state="disabled")
+        self._load_visual_text_page(preserve_view=False)
         self._sync_text_history()
 
     def _add_text_box(self) -> None:
@@ -1971,15 +2213,29 @@ class App:
         page_height = height / scale
         x = max(0, min(page_width - 1, self.visual_text_canvas.canvasx(20) / scale))
         top = max(0, min(page_height - 1, self.visual_text_canvas.canvasy(20) / scale))
+        # NOTE: the box starts with a sensible frame the user can resize freely
+        # from its corner; the text wraps inside it
+        from PIL import ImageFont as _IF
+
+        try:
+            probe = _IF.truetype(str(font.path), size, index=font.index)
+            box_w = max(60.0, probe.getlength("Text") + 16)
+        except OSError:
+            box_w = 80.0
+        box_h = size * 1.6
         self.placed_text.append(pdf_edit.PlacedText(
             page=self.visual_text_page, text="Text", x=x, top=top,
             font_size=size, font_path=font.path, font_index=font.index,
+            width=box_w, height=box_h,
         ))
         self._select_placed_text(len(self.placed_text) - 1)
         self._record_text_edit()
         self._draw_placed_text()
         self.placed_text_entry.focus_set()
-        self._select_all_in_entry(self.placed_text_entry)
+        # NOTE: the caret goes to the END; select-all would wipe the starter
+        # text on the first keypress
+        self.placed_text_entry.mark_set("insert", "end-1c")
+        self.placed_text_entry.see("insert")
 
     def _select_placed_text(self, index: int) -> None:
         item = self.placed_text[index]
@@ -2001,6 +2257,7 @@ class App:
         self._sync_placed_text_entry(item.text)
         self.visual_text_entry.configure(state="normal")
         self.visual_text_queue_button.configure(state="disabled")
+        self.visual_text_redact_button.configure(state="disabled")
         self.text_font_hint_var.set("Type in the box and drag its border; choose a font above.")
 
     def _on_placed_text_change(self, _event=None) -> None:
@@ -2158,8 +2415,8 @@ class App:
             except OSError as exc:
                 self.text_font_hint_var.set(f"Cannot load font: {exc}")
                 continue
-            width = max(20, int(font.getlength(item.text)) + 4)
-            height = max(20, int(font_size * 1.5))
+            width = max(20, int(item.width * scale) if item.width else int(font.getlength(item.text)) + 4)
+            height = max(20, int(item.height * scale) if item.height else int(font_size * 1.5))
             image = Image.new("RGBA", (width, height))
             ImageDraw.Draw(image).text((2, font_size), item.text, font=font, fill="black", anchor="ls")
             photo = ImageTk.PhotoImage(image)
@@ -2184,6 +2441,16 @@ class App:
                 outline="#d00000" if index == self.selected_placed_text else "#5555cc",
                 dash=(3, 2), tags=(*tags, "placed-text-border"),
             )
+            if index == self.selected_placed_text:
+                # NOTE: the corner grip is the resize handle; dragging anywhere
+                # else on the box moves it
+                grip_x = left + width + 8
+                grip_y = top + height + 8
+                canvas.create_rectangle(
+                    grip_x - 5, grip_y - 5, grip_x + 5, grip_y + 5,
+                    fill="#d00000", outline="#d00000",
+                    tags=("placed-text", "box-grip"),
+                )
         if focus_in_box and self.selected_placed_text is not None:
             self.placed_text_entry.focus_set()
             self.placed_text_entry.icursor(cursor)
@@ -2231,6 +2498,20 @@ class App:
         canvas_y = self.visual_text_canvas.canvasy(event.y)
         for canvas_id in reversed(self.visual_text_canvas.find_overlapping(canvas_x, canvas_y, canvas_x, canvas_y)):
             for tag in self.visual_text_canvas.gettags(canvas_id):
+                if tag == "box-grip":
+                    # NOTE: the corner grip RESIZES the box instead of moving it
+                    index = self.selected_placed_text
+                    if index is not None:
+                        item = self.placed_text[index]
+                        scale = self._viewer_scale
+                        self._text_resize_origin = (
+                            canvas_x - item.x * scale,
+                            canvas_y - item.top * scale,
+                        )
+                        self._text_drag_offset = (0.0, 0.0)
+                        self._text_resizing = True
+                        self._finish_text_editing()
+                    return
                 if tag.startswith("box-"):
                     index = int(tag[4:])
                     self._select_placed_text(index)
@@ -2242,12 +2523,67 @@ class App:
                         canvas_x - item.x * scale,
                         canvas_y - item.top * scale,
                     )
+                    self._text_resizing = False
                     self._load_visual_text_page()
                     self._sync_text_history()
                     return
+        # a click anywhere else ends the box edit, as the user asked
+        self._finish_text_editing()
         self.selected_placed_text = None
         self._select_visual_text(event)
         self._sync_text_history()
+
+    def _on_box_text_press(self, event) -> None:
+        """A click inside the Text widget selects the box and arms dragging."""
+        index = self.selected_placed_text
+        if index is None:
+            return
+        item = self.placed_text[index]
+        scale = self._viewer_scale
+        canvas_x = self.visual_text_canvas.canvasx(
+            self.placed_text_entry.winfo_x() + event.x
+        )
+        canvas_y = self.visual_text_canvas.canvasy(
+            self.placed_text_entry.winfo_y() + event.y
+        )
+        self._text_drag_offset = (
+            canvas_x - item.x * scale,
+            canvas_y - item.top * scale,
+        )
+        self._text_resizing = False
+
+    def _drag_from_widget(self, event) -> None:
+        """Translate a press-drag inside the on-canvas Text widget to canvas coords."""
+        if self.selected_placed_text is None or self._text_drag_offset is None:
+            return
+        canvas_x = self.visual_text_canvas.canvasx(
+            self.placed_text_entry.winfo_x() + event.x
+        )
+        canvas_y = self.visual_text_canvas.canvasy(
+            self.placed_text_entry.winfo_y() + event.y
+        )
+        scale = self._viewer_scale
+        item = self.placed_text[self.selected_placed_text]
+        self.placed_text[self.selected_placed_text] = replace(
+            item,
+            x=max(0, (canvas_x - self._text_drag_offset[0]) / scale),
+            top=max(0, (canvas_y - self._text_drag_offset[1]) / scale),
+        )
+        self._draw_placed_text()
+
+    def _finish_text_editing(self) -> None:
+        """Commit the on-canvas box and drop its focus.
+
+        NOTE: this is what a click OUTSIDE the box does: the edit is complete,
+        so the box stops taking keystrokes and Remove Box becomes the way to
+        get rid of it. The text already lives in the item, so nothing is lost.
+        """
+        if self.selected_placed_text is None:
+            return
+        if self.root.focus_get() == self.placed_text_entry:
+            self.visual_text_canvas.focus_set()
+        self._update_placed_text()
+        self._record_text_edit()
 
     def _drag_placed_text(self, event) -> None:
         index = self.selected_placed_text
@@ -2256,21 +2592,34 @@ class App:
         # NOTE: the item position is stored in PDF points, so the drag works
         # in canvas pixels and is scaled back before it is stored
         scale = self._viewer_scale
-        x = (self.visual_text_canvas.canvasx(event.x) - self._text_drag_offset[0]) / scale
-        y = (self.visual_text_canvas.canvasy(event.y) - self._text_drag_offset[1]) / scale
+        canvas_x = self.visual_text_canvas.canvasx(event.x)
+        canvas_y = self.visual_text_canvas.canvasy(event.y)
         page_width = self.visual_text_image.width() / scale
         page_height = self.visual_text_image.height() / scale
-        self.placed_text[index] = replace(
-            self.placed_text[index],
-            x=max(0, min(page_width - 1, x)),
-            top=max(0, min(page_height - 1, y)),
-        )
+        item = self.placed_text[index]
+        if getattr(self, "_text_resizing", False):
+            origin_x, origin_y = getattr(self, "_text_resize_origin", (0.0, 0.0))
+            self.placed_text[index] = replace(
+                item,
+                width=max(30.0, (canvas_x - origin_x) / scale),
+                height=max(item.font_size * 1.2, (canvas_y - origin_y) / scale),
+            )
+        else:
+            x = (canvas_x - self._text_drag_offset[0]) / scale
+            y = (canvas_y - self._text_drag_offset[1]) / scale
+            self.placed_text[index] = replace(
+                item,
+                x=max(0, min(page_width - 1, x)),
+                top=max(0, min(page_height - 1, y)),
+            )
         self._draw_placed_text()
 
     def _end_text_drag(self, _event) -> None:
         if self._text_drag_offset is not None:
             self._record_text_edit()
         self._text_drag_offset = None
+        self._text_resizing = False
+        self._text_resize_origin = (0.0, 0.0)
 
     def _remove_text_box(self) -> None:
         if self.selected_placed_text is None:
@@ -2278,6 +2627,8 @@ class App:
             return
         self.placed_text.pop(self.selected_placed_text)
         self.selected_placed_text = None
+        self._text_resizing = False
+        self._text_drag_offset = None
         self.visual_text_entry.configure(state="disabled")
         self._record_text_edit()
         self._draw_placed_text()
@@ -2415,10 +2766,36 @@ class App:
         self._set_editor_text(replacement)
         self.visual_text_entry.configure(state="normal")
         self.visual_text_queue_button.configure(state="normal")
+        self.visual_text_redact_button.configure(state="normal")
         self.visual_text_entry.focus_set()
-        self._select_all_in_entry(self.visual_text_entry)
+        # NOTE: the whole line is NOT highlighted. A selection would replace the
+        # wording on the next keystroke, which is not what clicking a line means;
+        # the caret goes to the end so typing appends to the line.
+        self.visual_text_entry.tag_remove("sel", "1.0", "end")
+        self.visual_text_entry.mark_set("insert", "end-1c")
+        self.visual_text_entry.see("insert")
         self._load_visual_text_page()
         self._sync_text_history()
+
+    def _queue_visual_text_redact(self) -> None:
+        """Queue the selected line to have its text object removed on save."""
+        match = self.selected_visual_text
+        if match is None:
+            return
+        key = self._visual_text_key(match)
+        # dropping any queued text replacement so the black bar wins
+        self.visual_text_edits.pop(key, None)
+        self.redacted_visual_text[key] = match
+        self.selected_visual_text = None
+        self.visual_text_entry.configure(state="disabled")
+        self.visual_text_queue_button.configure(state="disabled")
+        self.visual_text_redact_button.configure(state="disabled")
+        self._record_text_edit()
+        self._load_visual_text_page()
+        count = len(self.redacted_visual_text)
+        self.visual_text_status_var.set(
+            f"{count} line(s) marked for redaction. Apply Changes writes the redacted PDF."
+        )
 
     def _queue_visual_text_change(self) -> None:
         match = self.selected_visual_text
@@ -2647,10 +3024,12 @@ class App:
             self.edit_progress.configure(value=self.edit_progress["maximum"])
 
     def _edit_log_write(self, message: str) -> None:
-        self.edit_log.configure(state="normal")
-        self.edit_log.insert("end", message + "\n")
-        self.edit_log.see("end")
-        self.edit_log.configure(state="disabled")
+        """Write an edit line to the internal log.
+
+        NOTE: the on-screen Processing Log was removed; the call sites remain,
+        so the message is recorded on the ``pdftoolbox`` logger instead.
+        """
+        logging.getLogger("pdftoolbox").info("edit: %s", message)
 
     def _report_edit_result(self, result, note: str) -> None:
         """Log the path(s) an edit produced and set the status line.
@@ -2689,6 +3068,46 @@ class App:
             self.visual_text_fonts[key] for key in self.visual_text_edits
         ]
         sizes = [self.visual_text_sizes[key] for key in self.visual_text_edits]
+        redactions = list(getattr(self, "redacted_visual_text", {}).values())
+        # NOTE: redaction is content removal, unlike the visual overlay edits.
+        # When both are pending, the overlay is written to a scratch file first
+        # (page order untouched, so the line page numbers stay valid) and the
+        # redaction then carries BOTH plus the page order and rotations into
+        # the final file.
+        if redactions:
+            tag = "_redacted"
+            target = self._edit_output_target(src, tag)
+
+            def redact_work():
+                if edits or additions:
+                    import tempfile
+
+                    with tempfile.TemporaryDirectory() as tmp:
+                        scratch = Path(tmp) / "overlay.pdf"
+                        pdf_edit.apply_edits(
+                            src,
+                            scratch,
+                            edits=edits,
+                            font_paths=fonts,
+                            additions=additions,
+                            font_sizes=sizes,
+                        )
+                        return pdf_edit.redact_lines(
+                            scratch, target, redactions,
+                            order=order, rotations=rotations,
+                        )
+                return pdf_edit.redact_lines(
+                    src, target, redactions, order=order, rotations=rotations
+                )
+
+            def _redact_done(path: Path) -> None:
+                self.visual_text_status_var.set(
+                    f"Redacted copy saved: {path.name}. The removed text is out "
+                    "of the text layer and cannot be recovered."
+                )
+
+            self._run_edit_task_custom(redact_work, _redact_done, "Redacted PDF copy saved")
+            return
         additions = list(self.placed_text)
         if any(
             not item.text.strip() or item.font_path is None or not 4 <= item.font_size <= 200
@@ -2761,6 +3180,40 @@ class App:
             return pdf_edit.extract_pages(src, target, pages)
 
         self._run_edit_task(work, "Extracted pages")
+
+    def run_compress(self) -> None:
+        src = self.edit_source
+        if not self._edit_ready():
+            return
+        try:
+            quality = int(self.compress_quality_var.get())
+        except ValueError:
+            messagebox.showerror("PDF-X", "Image quality must be a number from 10 to 95.")
+            return
+        if not 10 <= quality <= 95:
+            messagebox.showerror("PDF-X", "Image quality must be from 10 to 95.")
+            return
+        dpi_text = self.compress_dpi_var.get()
+        dpi = None if dpi_text == "Off" or not dpi_text else int(dpi_text.split()[0])
+        grayscale = self.compress_grayscale_var.get()
+        target = self._edit_output_target(src, "_compressed")
+
+        def work():
+            return pdf_edit.compress_pdf(
+                src,
+                target,
+                image_quality=quality,
+                downsample_dpi=dpi,
+                grayscale=grayscale,
+            )
+
+        def _done(path: Path) -> None:
+            saved = src.stat().st_size - path.stat().st_size
+            self.edit_status_var.set(
+                f"Compressed copy saved ({saved:+,} bytes): {path.name}"
+            )
+
+        self._run_edit_task_custom(work, _done, "Compressed PDF copy saved")
 
     def run_watermark(self) -> None:
         src = self.edit_source
@@ -2885,17 +3338,20 @@ class App:
         if added is not None:
             self._remember_dir(Path(added).expanduser().resolve().parent)
         self._refresh_targets()
+        self._sync_file_drop_zone()
 
     def remove_selected(self) -> None:
         for index in sorted(self.file_list.curselection(), reverse=True):
             self.file_list.delete(index)
             del self.files[index]
         self._refresh_targets()
+        self._sync_file_drop_zone()
 
     def clear_files(self) -> None:
         self.file_list.delete(0, "end")
         self.files.clear()
         self._refresh_targets()
+        self._sync_file_drop_zone()
     # ---------- merge file list ----------
 
     @staticmethod
@@ -2915,6 +3371,7 @@ class App:
         for index in selection:
             if index < self.merge_list.size():
                 self.merge_list.selection_set(index)
+        self._sync_merge_drop_zone()
 
     def add_merge_files(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -3051,10 +3508,13 @@ class App:
             self.merge_progress.configure(value=self.merge_progress["maximum"])
 
     def _merge_log(self, message: str) -> None:
-        self.merge_log.configure(state="normal")
-        self.merge_log.insert("end", message + "\n")
-        self.merge_log.see("end")
-        self.merge_log.configure(state="disabled")
+        """Write a merge line to the internal log.
+
+        NOTE: the on-screen Processing Log was removed, but the call sites stay
+        so nothing has to be restructured. A line is still recorded for anyone
+        running the app from a console or attaching a handler.
+        """
+        logging.getLogger("pdftoolbox").info("merge: %s", message)
 
     def start_merge(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -3374,10 +3834,13 @@ class App:
         self.progress.configure(value=self.progress["maximum"])
 
     def _log(self, message: str) -> None:
-        self.log.configure(state="normal")
-        self.log.insert("end", message + "\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        """Write a conversion line to the internal log.
+
+        NOTE: the on-screen Processing Log was removed, so the message goes to
+        the ``pdftoolbox`` logger. Keeping the method means every existing call
+        site still works and the run stays traceable from a console.
+        """
+        logging.getLogger("pdftoolbox").info("%s", message)
 
     # ---------- promo ----------
 
@@ -3405,6 +3868,10 @@ class App:
     @staticmethod
     def _open_coffee_link(_event) -> None:
         webbrowser.open("https://buymeacoffee.com/DrLwSii")
+
+    @staticmethod
+    def _open_readme_link(_event) -> None:
+        webbrowser.open("https://github.com/BorneanWingz/PDF-X/blob/main/README.md")
 
 
 def run_gui() -> int:

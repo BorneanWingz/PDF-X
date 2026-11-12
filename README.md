@@ -1,19 +1,22 @@
 # PDF-X
 
-**Version 0.1.6**
+**Version 0.1.7**
 
 Portable, offline PDF converter and OCR toolbox for internal team use.
 Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 
 - **GUI**: double-click `PDF-X.exe` (tkinter, no external runtime needed)
   - The window has a dark header with the brand mark, a **left sidebar** that
-    navigates between **Convert File**, **Merge PDF**, **Edit PDF** and
-    **About**, and a **RECENT FILES** list that reopens a document with one
-    click. Every page sits on a white card, so the layout reads the same
-    everywhere. The accent colour is the crimson of the app icon.
+    navigates between **Convert File**, **Merge PDF**, **Organise PDF**,
+    **Edit PDF**, **Utilities** and **About**, and a **RECENT FILES** list that
+    reopens a document with one click. Every page sits on a white card, so the
+    layout reads the same everywhere. The accent colour is the crimson of the
+    app icon.
   - **Convert File** holds every conversion option; **Merge PDF** combines
-    files into one PDF; **Edit PDF** edits an existing PDF; **About** carries
-    the version and author details
+    files into one PDF; **Organise PDF** reorders, rotates, deletes, splits and
+    extracts pages; **Edit PDF** edits the text of an existing PDF;
+    **Utilities** watermarks, numbers, find-and-replaces and compresses it;
+    **About** carries the version and author details
   - "Output in same folder" checkbox: writes results beside each input file and
     disables the Output folder field and Browse button while ticked
   - pressing Convert with neither an output folder nor the checkbox ticked asks
@@ -33,31 +36,51 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
   the result; reorder with **Move Up** / **Move Down**, by dragging rows, or by
   adding files in the order you want. Needs at least two files; the result is
   `<first file>_pdfx_merged.pdf`.
-- **Edit PDF** page: import one PDF and edit it, with no upload and no network.
-  **Import PDF** loads a file and **Clear** drops it again; changes are only
-  ever written to a new copy, so the original stays untouched. The page opens
-  on a dashed drop zone — drop a PDF on it, or use **Import PDF**.
-  - **Organise Pages**: reorder (**Move Up/Down** or drag), rotate 90° left
-    (↺) / right (↻) or 180°, and delete pages. The list is numbered and tags each
-    rotated page (e.g. `[rotated 90° ↻]`); the saved PDF follows that order.
-    The actions sit on an icon toolbar under the page list.
-  - **Edit Text**: click a selectable text line in the page preview and queue
-    a change, or choose **Add Text Box**, type in the box and drag its border
-    into position on the current page. Choose an installed font and size; for
-    an existing line the editor suggests an exact or close installed font
-    based on the PDF font name. Font and size also apply to queued line
-    changes, including lines whose wording stays the same. Explicit sizes are
-    not automatically reduced to fit the original line. Use **Undo** and
-    **Redo** (or Ctrl+Z and Ctrl+Y in the editor) for text and box changes;
-    dragging a box counts as one change. **Apply Changes** writes the page
-    changes and the text edits together, as ONE new PDF copy, so there is only
-    one save button to press.
+- **Organise PDF** page: import one PDF and reorganise it, with no upload and
+  no network. **Import PDF** loads a file and **Clear** drops it again; changes
+  are only ever written to a new copy, so the original stays untouched. The page
+  opens on the same dashed drop zone the other file tabs use — drop a PDF on it,
+  or use **Import PDF**. The imported PDF is shared with **Edit PDF**, so a file
+  opened here is ready to edit the moment you switch pages, and the other way
+  round.
+  - The page list is numbered and tags each rotated page (e.g.
+    `[rotated 90° ↻]`); the saved PDF follows that order. Reorder with
+    **Move Up/Down** or by dragging a row, rotate 90° left (↺) / right (↻) or
+    180°, or delete pages. The actions sit on an icon toolbar under the list.
+  - **Split every N pages** writes one output file per chunk, and
+    **Extract a page range** (`1-3,5`, kept in the given order) pulls out just
+    the pages you name.
+- **Edit PDF** page: edit the text of the imported PDF. **Import PDF** loads a
+  file and **Clear** drops it again; changes are only ever written to a new
+  copy, so the original stays untouched. The page is the text editor itself —
+  there is no sub-tab strip any more.
+  - Click a selectable text line in the page preview and queue
+    a change, or choose **Add Text Box**, type in the box and drag it into
+    position on the current page. A click on a line leaves the text box
+    unselected and puts the caret at the end of the line, so typing appends
+    instead of replacing. Choose an installed font and size; for an existing
+    line the editor suggests an exact or close installed font based on the PDF
+    font name. Font and size drive the selected line straight away, even
+    before the change is queued, and a longer replacement expands its cover box
+    instead of being clipped to the original line. **Redact Line** removes the
+    selected line's text object from the output and paints a black bar over it,
+    so the characters are really gone from the text layer - unlike a normal
+    line edit, which is an overlay. Use **Undo** and **Redo** (↶ / ↷, or Ctrl+Z
+    and Ctrl+Y in the editor) for text and box changes; dragging a box counts
+    as one change. **Apply Changes** writes the page changes and the text edits
+    together, as ONE new PDF copy, so there is only one save button to press.
     The text box is multi-line and scrolls, so a long replacement can be typed
     and reviewed; the box drawn on the page scrolls with the mouse wheel.
-    Changing the font or the size applies to the selected line straight away,
-    without waiting for the change to be queued.
+    An added text box is a resizable frame: drag it by its middle or border to
+    move it, and drag the red corner grip to change its width and height. A
+    click outside the frame ends the edit, and the box then stays clickable so
+    **Remove Box** can delete it.
     The page preview has a **Zoom** control (50% to 400%, plus **Fit**), and
     Ctrl+wheel zooms, so a long document can be read without a bigger window.
+    The page is centred in the preview, and stays centred as the window is
+    resized. Page navigation is the **◀** / **▶** pair beside the page counter.
+    Selecting a line, changing its font or editing it keeps the viewer at the
+    same scroll position instead of jumping back to the top of the page.
     Selected TrueType fonts and TrueType collections are embedded in the output;
     unsupported font outlines are reported when saving. This is a line-level overlay:
     it does not reflow paragraphs, and the original characters remain beneath
@@ -68,12 +91,20 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
     when a page has no selectable text. For scanned text, use **Convert File**
     to create a **searchable-pdf**, then import that copy for line editing.
     The visual editor currently supports upright pages only.
-  - **PDF Tools**: split every N pages or extract a page range (`1-3,5`),
-    add a watermark or page numbers, and find and replace terms across the
-    document. Find and replace uses visual overlays; adding text is in
-    **Edit Text**.
+- **Utilities** page: add a watermark or page numbers, compress the PDF, and
+  find and replace terms across the document. It shares the imported PDF with
+  **Edit PDF** and **Organise PDF**, so a file opened on one page is ready on
+  the others; **Import PDF** and **Clear** are on the page itself. Find and
+  replace uses visual overlays; adding text is in **Edit PDF**, and splitting
+  or extracting pages is on the **Organise PDF** page. **Compress PDF** re-packs
+  the page content streams, shares duplicate objects between pages and
+  re-encodes images as JPEG at the chosen quality, optionally downsampling them
+  to a target DPI and converting them to grayscale. An image is only replaced
+  when the new encoding is smaller, so the result is never bigger than the
+  source.
   - Results are new files named `<name>_pdfx...pdf` (e.g. `_watermark`,
-    `_numbered`, `_text`, `_replaced`, `_part1`) and never overwrite the source.
+    `_numbered`, `_text`, `_replaced`, `_compressed`, `_redacted`, `_part1`)
+    and never overwrite the source.
     The output folder uses the same controls as the other tabs: a folder field
     with **Browse** and an **"Output in same folder"** checkbox (on by default)
     that writes the result beside the PDF.
@@ -85,22 +116,47 @@ Build and release notes: [docs/PLAN.md](docs/PLAN.md).
 - **Offline by default**: only the optional promo banner check makes a network call, with a
   2-second timeout and silent failure.
 
+## What's new in 0.1.7
+
+- **Utilities is now an independent page.** Watermark, page-number, find-and-replace
+  and compression tools moved out of the Edit PDF sub-tabs into a dedicated
+  **Utilities** sidebar page. It shares the selected PDF with Edit PDF and
+  Organise PDF and has its own Import PDF / Clear source row.
+- **Edit PDF is a direct editor page.** The unnecessary internal notebook was
+  removed, leaving the visual text editor directly on the page. Previous and
+  next navigation use compact **◀** and **▶** arrow buttons.
+- **The page preview is centred.** The PDF remains centred whenever it is
+  smaller than the viewer, including after resizing, without changing the
+  page-relative coordinates used by text selection and text-box dragging.
+- **Processing Log controls were removed from every page.** Conversion, merge
+  and edit activity remains available through the internal `pdftoolbox` Python
+  logger, so existing worker paths remain safe without consuming UI space.
+- **The About page links to the README** and identifies the author as
+  **Dr. Longwin Sii**.
+- **Windows executable metadata is stamped during packaging** with product
+  name, version, copyright and file-description information for PDF-X.
+
 ## What's new in 0.1.6
 
 - **The interface is rebuilt around a sidebar.** The old top tab strip is
   gone: a dark header carries the brand mark and name, the left rail navigates
-  between Convert File, Merge PDF, Edit PDF and About, and **RECENT FILES**
-  reopens a document with one click. Every page is a white card, so the
-  hierarchy is the same on each one.
+  between Convert File, Merge PDF, Organise PDF, Edit PDF and About, and
+  **RECENT FILES** reopens a document with one click. Every page is a white
+  card, so the hierarchy is the same on each one.
 - **The theme follows the icon.** The accent colour is the crimson of
   `assets/pdf-x.png` rather than the generic blue, so the window, the buttons
   and the app icon look like one product. The palette and the line glyphs live
   in a new `pdftoolbox/theme.py` and are drawn with Pillow, so the app still
   ships with no extra dependencies.
-- **Edit PDF opens on a drop zone.** A dashed drop target with a PDF badge
-  accepts a dragged file, and gives way to the page list once a document is
-  open. The page actions (move, rotate, delete, reset) now sit on an icon
-  toolbar under the page list.
+- **Organise PDF is its own page.** Page order, rotation, deletion, splitting
+  and extraction used to live in a sub-tab of Edit PDF; they now share one page
+  with the page list they act on, and Edit PDF keeps only the text editor and
+  the PDF tools. Both pages use the same imported file, so a PDF opened on one
+  is ready on the other.
+- **Every file tab opens on a drop zone.** A dashed drop target with a PDF badge
+  accepts a dragged file, and gives way to the list once a document is added.
+  Convert File, Merge PDF and Organise PDF share that empty state, and the page
+  actions (move, rotate, delete, reset) sit on an icon toolbar under the list.
 - **Wording follows British English** throughout the interface and the code:
   *Organise Pages*, *bottom-centre*, *colour*.
 - **The Edit Text tab is easier to work with.** The text box is multi-line and
@@ -246,10 +302,10 @@ report.pdf   --to png     -> report_pdfx_page0001.png, report_pdfx_page0002.png,
 report.pdf   --to ocr     -> report_pdfx_searchable.pdf
 notes.md     --to pdf     -> notes_pdfx.pdf
 a.pdf + b.pdf --to merge  -> a_pdfx_merged.pdf
+Organise PDF: split     -> report_pdfx_part1.pdf, report_pdfx_part2.pdf, ...
+Organise PDF: extract   -> report_pdfx_extract.pdf
 Edit PDF: watermark -> report_pdfx_watermark.pdf
 Edit PDF: numbers   -> report_pdfx_numbered.pdf
-Edit PDF: split     -> report_pdfx_part1.pdf, report_pdfx_part2.pdf, ...
-Edit PDF: extract   -> report_pdfx_extract.pdf
 Edit PDF: add text  -> report_pdfx_text.pdf
 Edit PDF: replace   -> report_pdfx_replaced.pdf
 ```
