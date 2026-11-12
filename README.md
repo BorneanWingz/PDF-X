@@ -5,6 +5,12 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE.md)
 [![Works offline](https://img.shields.io/badge/works-offline-orange)]()
 
+<div align="center">
+    <img src="assets/pdf-x.png" alt="PDF-X Logo" width="200" height="200"/>
+    <h1>📄 PDF-X</h1>
+    <h3><em>Convert, organise and edit PDFs offline.</em></h3>
+</div>
+
 ## About
 
 PDF-X is a portable Windows application for converting, combining, organising
@@ -156,13 +162,7 @@ PDF-X uses the following open-source projects and components:
 
 ## Preview
 
-The application artwork are stored in the repository assets:
-
-![PDF-X application artwork](assets/pdf-x.jpeg)
-
-The application includes screens for converting files, merging PDFs, organising
-pages, editing PDF text and applying utilities such as compression and
-watermarks.
+![PDF-X preview](assets/pdf-x_preview.png)
 
 ## License
 
