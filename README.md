@@ -1,6 +1,6 @@
 # PDF-X — Offline PDF Converter and OCR Toolbox
 
-[![Latest version](https://img.shields.io/badge/version-0.1.8-crimson)](https://github.com/BorneanWingz/PDF-X)
+[![Latest version](https://img.shields.io/badge/version-0.1.8-crimson)](https://github.com/BorneanWingz/PDF-X/blob/main/Build%20Release%20Notes.md)
 [![Platform](https://img.shields.io/badge/platform-Windows-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE.md)
 [![Works offline](https://img.shields.io/badge/works-offline-orange)]()
