@@ -662,6 +662,7 @@ def test_import_and_clear_buttons_close_the_source_row(tk_root, monkeypatch) -> 
     from tkinter import ttk
 
     app = App.__new__(App)
+    app.root = tk_root
     app.edit_tab = ttk.Frame(tk_root)
     app.edit_tab.pack()
     app.config = {}
@@ -683,8 +684,11 @@ def test_import_and_clear_buttons_close_the_source_row(tk_root, monkeypatch) -> 
                     yield child
                 yield from buttons(child)
 
-        labels = {str(button["text"]): button for button in buttons(app.edit_tab)}
-        assert set(labels) == {"Import PDF", "Clear"}
+        labels = {
+            str(button["text"]): button
+            for button in buttons(app.edit_source_label.master)
+        }
+        assert set(labels) == {"Import PDF", "Clear", "Open a new window"}
         # Clear is packed to the right, so it closes the row
         assert labels["Clear"].pack_info()["side"] == "right"
         assert labels["Import PDF"].pack_info()["side"] == "left"
@@ -697,6 +701,157 @@ def test_import_and_clear_buttons_close_the_source_row(tk_root, monkeypatch) -> 
         assert calls == ["import", "clear"]
     finally:
         app.edit_tab.destroy()
+
+
+def test_new_editor_window_preserves_session_and_saves(scratch_app, tmp_path, monkeypatch) -> None:
+    import sys
+
+    from pypdf import PdfReader
+
+    app = scratch_app
+    app._show_page("edit")
+    assert str(app.edit_window_button["state"]) == "disabled"
+    source = _text_pdf(tmp_path)
+    app._reset_edit_session(source, 1)
+    app._load_visual_text_page()
+    app.root.update()
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    app.visual_text_var.set("Queued correction")
+    app._queue_visual_text_change()
+    editor = app.visual_text_tab
+    canvas = app.visual_text_canvas
+    app.edit_window_button.invoke()
+    app.root.update()
+
+    assert editor.winfo_manager() == "wm"
+    if sys.platform == "win32":
+        assert app.root.tk.call("wm", "state", editor._w) == "zoomed"
+    assert app.visual_text_canvas is canvas
+    assert app.visual_text_edits[app._visual_text_key(line)][1] == "Queued correction"
+    app.edit_window_button.invoke()
+    assert editor.winfo_manager() == "wm"
+    assert str(app._expanded_output_entry["state"]) == "disabled"
+    app.edit_same_folder_var.set(False)
+    app._toggle_edit_same_folder()
+    assert str(app._expanded_output_entry["state"]) == "normal"
+    assert str(app.edit_out_entry["state"]) == "normal"
+    dialogs = []
+    monkeypatch.setattr(
+        gui_module.filedialog, "askdirectory",
+        lambda **kwargs: dialogs.append(kwargs) or str(tmp_path),
+    )
+    app._expanded_browse_button.invoke()
+    assert dialogs[0]["parent"] is editor
+    assert app.edit_out_var.get() == str(tmp_path)
+    app._set_edit_busy(True)
+    assert str(app.expanded_edit_apply_button["state"]) == "disabled"
+    app._set_edit_busy(False)
+    app._add_text_box()
+    app.placed_text_entry.insert("end", " in window")
+    app.root.update()
+    assert app.placed_text[0].text == "Text in window"
+
+    target = tmp_path / "out.pdf"
+    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix="": target)
+    monkeypatch.setattr(
+        app, "_run_edit_task_custom", lambda work, done, title: done(work())
+    )
+    app.expanded_edit_apply_button.invoke()
+    page_text = (PdfReader(str(target)).pages[0].extract_text() or "").replace("\n", "")
+    assert "Queued correction" in page_text
+    assert "Text in window" in page_text
+
+    close_command = app.root.tk.call("wm", "protocol", editor._w, "WM_DELETE_WINDOW")
+    app.root.tk.call(close_command)
+    app.root.update()
+    assert editor.winfo_manager() == "pack"
+    assert app.visual_text_canvas is canvas
+    assert app.placed_text[0].text == "Text in window"
+    assert app.visual_text_edits[app._visual_text_key(line)][1] == "Queued correction"
+
+
+def test_new_editor_window_closes_on_clear_and_can_reopen(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._show_page("edit")
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app._load_visual_text_page()
+    app.edit_window_button.invoke()
+    app.root.update()
+    app.clear_edit_pdf()
+    app.root.update()
+    assert app.visual_text_tab.winfo_manager() == ""
+    assert app.edit_drop.winfo_ismapped()
+    assert str(app.edit_window_button["state"]) == "disabled"
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app._load_visual_text_page()
+    app.edit_window_button.invoke()
+    app.root.update()
+    assert app.visual_text_tab.winfo_manager() == "wm"
+    app._close_editor_window()
+
+
+def test_new_editor_window_accepts_another_document(scratch_app, tmp_path) -> None:
+    from reportlab.pdfgen import canvas
+
+    app = scratch_app
+    app._show_page("edit")
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app._load_visual_text_page()
+    app.edit_window_button.invoke()
+    other = tmp_path / "other.pdf"
+    pdf = canvas.Canvas(str(other))
+    pdf.drawString(72, 720, "A different document with selectable text")
+    pdf.save()
+    app._on_edit_drop(SimpleNamespace(data="{" + str(other) + "}"))
+    app.root.update()
+    assert app.edit_source == other
+    assert app.visual_text_tab.winfo_manager() == "wm"
+    assert other.name in app.root.tk.call("wm", "title", app.visual_text_tab._w)
+    app._close_editor_window()
+    assert app.visual_text_tab.winfo_manager() == "pack"
+
+
+def test_closing_editor_window_during_save_keeps_job_working(
+    scratch_app, tmp_path, monkeypatch
+) -> None:
+    import threading
+    import time
+
+    app = scratch_app
+    app._show_page("edit")
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app._load_visual_text_page()
+    app.edit_window_button.invoke()
+    target = tmp_path / "out.pdf"
+    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix="": target)
+    original = pdf_edit.apply_edits
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_save(*args, **kwargs):
+        started.set()
+        if not release.wait(10):
+            raise RuntimeError("Timed out waiting to finish the test save")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pdf_edit, "apply_edits", blocked_save)
+    try:
+        app.expanded_edit_apply_button.invoke()
+        assert started.wait(5)
+        assert str(app.expanded_edit_apply_button["state"]) == "disabled"
+        assert str(app.edit_apply_button["state"]) == "disabled"
+        app._close_editor_window()
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 10
+    while app.edit_status_var.get() == "Working..." and time.monotonic() < deadline:
+        app.root.update()
+        time.sleep(0.02)
+    assert app.edit_status_var.get() == "Edited PDF copy saved"
+    assert target.is_file()
+    assert str(app.edit_apply_button["state"]) == "normal"
 
 
 def test_clear_drops_the_imported_file(text_editor) -> None:
@@ -802,10 +957,85 @@ def test_queue_visual_text_redact_and_undo(text_editor) -> None:
     assert key in app.redacted_visual_text
 
 
+@pytest.mark.parametrize("with_box", [False, True])
+def test_apply_redaction_with_optional_text_box(
+    text_editor, tmp_path, monkeypatch, with_box
+) -> None:
+    from pypdf import PdfReader
+
+    app = text_editor
+    app.edit_pages = [1, 2]
+    app.edit_rotations = {}
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    app._queue_visual_text_redact()
+    if with_box:
+        app._navigate_visual_text(1)
+        other_line = app.visual_text_lines[0]
+        app._select_visual_text(_canvas_event(app, other_line.x0, other_line.top))
+        app.visual_text_var.set("Updated line")
+        app._queue_visual_text_change()
+        app._add_text_box()
+    target = tmp_path / "redacted.pdf"
+    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix="": target)
+    monkeypatch.setattr(
+        app, "_run_edit_task_custom", lambda work, done, title: done(work())
+    )
+
+    app.run_organise()
+
+    reader = PdfReader(str(target))
+    assert "First line" not in (reader.pages[0].extract_text() or "")
+    if with_box:
+        assert "Text" in (reader.pages[1].extract_text() or "")
+        assert "Updated line" in (reader.pages[1].extract_text() or "")
+
+
 def test_undo_and_redo_buttons_use_symbols(text_editor) -> None:
     app = text_editor
     assert app.text_undo_button.cget("text") == "↶"
     assert app.text_redo_button.cget("text") == "↷"
+
+
+def test_zoom_controls_are_next_to_history_at_minimum_window(scratch_app, tmp_path) -> None:
+    from tkinter import ttk
+
+    app = scratch_app
+    app.root.geometry("980x680")
+    app._show_page("edit")
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app._load_visual_text_page()
+    app.root.update()
+    nav = app.text_redo_button.master
+    zoom_label = next(
+        child for child in nav.winfo_children()
+        if isinstance(child, ttk.Label) and child.cget("text") == "Zoom:"
+    )
+    buttons = {
+        child.cget("text"): child
+        for child in nav.winfo_children() if isinstance(child, ttk.Button)
+    }
+    assert {"−", "+", "Fit"} <= buttons.keys()
+    assert all(buttons[name].winfo_ismapped() for name in ("−", "+", "Fit"))
+    assert {
+        buttons["−"].winfo_width(), buttons["+"].winfo_width(),
+        app.text_undo_button.winfo_width(), app.text_redo_button.winfo_width(),
+    } == {app.text_undo_button.winfo_width()}
+    assert 0 <= zoom_label.winfo_rootx() - (
+        app.text_redo_button.winfo_rootx() + app.text_redo_button.winfo_width()
+    ) <= 20
+    assert buttons["Fit"].winfo_rootx() + buttons["Fit"].winfo_width() <= (
+        nav.winfo_rootx() + nav.winfo_width()
+    )
+    buttons["+"].invoke()
+    assert app.viewer_zoom_var.get() == "125%"
+    ttk.Style().configure("WideZoom.TButton", padding=(20, 2))
+    buttons["+"].configure(style="WideZoom.TButton")
+    app.root.update()
+    assert {
+        buttons["−"].winfo_width(), buttons["+"].winfo_width(),
+        app.text_undo_button.winfo_width(), app.text_redo_button.winfo_width(),
+    } == {app.text_undo_button.winfo_width()}
 
 
 def test_added_text_box_can_be_resized(text_editor) -> None:
@@ -823,6 +1053,135 @@ def test_added_text_box_can_be_resized(text_editor) -> None:
     resized = app.placed_text[0]
     assert resized.width > initial_w
     assert resized.height > initial_h
+
+
+def test_drag_focused_text_box_preserves_cursor(text_editor, monkeypatch) -> None:
+    app = text_editor
+    app._add_text_box()
+    app.placed_text_entry.mark_set("insert", "1.2")
+    monkeypatch.setattr(app.root, "focus_get", lambda: app.placed_text_entry)
+    app._text_drag_offset = (0.0, 0.0)
+    app._drag_placed_text(_canvas_event(app, 100, 100))
+    assert app.placed_text_entry.index("insert") == "1.2"
+    assert app.placed_text_entry.get("1.0", "end-1c") == "Text"
+
+
+def test_typing_in_box_commits_and_closes_on_click_outside(
+    text_editor, tmp_path, monkeypatch
+) -> None:
+    from pypdf import PdfReader
+
+    app = text_editor
+    app._add_text_box()
+    app.root.update()
+    app.placed_text_entry.focus_force()
+    app.root.update()
+    for text in (" first", " second"):
+        app.placed_text_entry.insert("end", text)
+        app.root.update()
+    assert app.placed_text[0].text == "Text first second"
+    assert app.visual_text_var.get() == "Text first second"
+
+    app._visual_text_click(_canvas_event(app, 300, 300))
+    app.root.update()
+    assert app.selected_placed_text is None
+    assert not any(
+        app.visual_text_canvas.type(item) == "window"
+        for item in app.visual_text_canvas.find_withtag("placed-text")
+    )
+    target = tmp_path / "out.pdf"
+    app.edit_pages = [1, 2]
+    app.edit_rotations = {}
+    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix="": target)
+    monkeypatch.setattr(
+        app, "_run_edit_task_custom", lambda work, done, title: done(work())
+    )
+    app.run_organise()
+    assert "Text first second" in (PdfReader(str(target)).pages[0].extract_text() or "").replace("\n", "")
+
+
+def test_text_controls_track_multiple_edits(text_editor) -> None:
+    app = text_editor
+    line = app.visual_text_lines[0]
+    app._select_visual_text(_canvas_event(app, line.x0, line.top))
+    app.root.update()
+    for text in (" first", " second"):
+        app.visual_text_entry.insert("end", text)
+        app.root.update()
+    assert app.visual_text_var.get() == "First line first second"
+
+
+def test_clicking_blank_page_deselects_line_without_losing_queued_change(text_editor) -> None:
+    app = text_editor
+    line = app.visual_text_lines[0]
+    app._visual_text_click(_canvas_event(app, line.x0, line.top))
+    app.visual_text_var.set("Updated")
+    app._queue_visual_text_change()
+    app._visual_text_click(_canvas_event(app, 300, 300))
+    assert app.selected_visual_text is None
+    assert str(app.visual_text_entry["state"]) == "disabled"
+    assert str(app.visual_text_queue_button["state"]) == "disabled"
+    assert str(app.visual_text_redact_button["state"]) == "disabled"
+    assert app.visual_text_edits[app._visual_text_key(line)][1] == "Updated"
+
+    app._visual_text_click(_canvas_event(app, line.x0, line.top))
+    assert app.selected_visual_text is not None
+    assert app.visual_text_var.get() == "Updated"
+
+
+def test_redact_button_is_below_queue_button(text_editor) -> None:
+    app = text_editor
+    app.root.update()
+    queue = app.visual_text_queue_button
+    redact = app.visual_text_redact_button
+    assert queue.master is redact.master
+    assert redact.winfo_rooty() >= queue.winfo_rooty() + queue.winfo_height()
+
+
+def test_apply_flushes_pending_box_text(text_editor, tmp_path, monkeypatch) -> None:
+    from pypdf import PdfReader
+
+    app = text_editor
+    app._add_text_box()
+    app.root.update()
+    app.placed_text_entry.focus_force()
+    app.root.update()
+    app.placed_text_entry.insert("end", " pending")
+    target = tmp_path / "out.pdf"
+    app.edit_pages = [1, 2]
+    app.edit_rotations = {}
+    monkeypatch.setattr(app, "_edit_output_target", lambda source, suffix="": target)
+    monkeypatch.setattr(
+        app, "_run_edit_task_custom", lambda work, done, title: done(work())
+    )
+    app.run_organise()
+    assert "Text pending" in (PdfReader(str(target)).pages[0].extract_text() or "").replace("\n", "")
+
+
+def test_navigation_flushes_pending_box_text(text_editor) -> None:
+    app = text_editor
+    app._add_text_box()
+    app.root.update()
+    app.placed_text_entry.focus_force()
+    app.root.update()
+    app.placed_text_entry.insert("end", " pending")
+    app._navigate_visual_text(1)
+    assert app.placed_text[0].text == "Text pending"
+    app._navigate_visual_text(-1)
+    assert app.placed_text[0].text == "Text pending"
+
+
+def test_added_text_preview_shows_wrapped_overflow(text_editor) -> None:
+    from dataclasses import replace
+
+    app = text_editor
+    app._add_text_box()
+    app.placed_text[0] = replace(
+        app.placed_text[0], text="one two three four five", width=45, height=20
+    )
+    app.selected_placed_text = None
+    app._draw_placed_text()
+    assert app._placed_images[0].height() > 20 * app._viewer_scale
 
 
 def test_navigation_does_not_add_an_undo_step(text_editor) -> None:
@@ -919,6 +1278,71 @@ def test_edit_pdf_has_no_sub_notebook(scratch_app) -> None:
     assert app.visual_text_tab.master is app.edit_tab
     # the page list and its toolbar belong to the Organise PDF page
     assert app.organise_pages.master is app.organise_drop.master
+
+
+def test_edit_drop_zone_tracks_shared_document(scratch_app, tmp_path, monkeypatch) -> None:
+    app = scratch_app
+    app._show_page("edit")
+    app.root.update()
+    assert app.edit_drop.winfo_ismapped()
+    assert not app.visual_text_tab.winfo_ismapped()
+    for widget in (
+        app.edit_drop.canvas, app.edit_drop.content,
+        *app.edit_drop.content.winfo_children(), app.visual_text_canvas,
+        app.placed_text_entry,
+    ):
+        assert widget.dnd_bind("<<Drop>>")
+
+    source = _text_pdf(tmp_path)
+    app._on_edit_drop(SimpleNamespace(data="{" + str(source) + "}"))
+    app.root.update()
+    assert app.edit_source == source
+    assert not app.edit_drop.winfo_ismapped()
+    assert app.visual_text_tab.winfo_ismapped()
+
+    errors = []
+    monkeypatch.setattr(
+        gui_module.messagebox, "showerror",
+        lambda title, message, **kwargs: errors.append(message),
+    )
+    invalid = tmp_path / "not-a-pdf.txt"
+    invalid.write_text("not a PDF")
+    app._on_edit_drop(SimpleNamespace(data="{" + str(invalid) + "}"))
+    assert errors
+    assert app.edit_source == source
+
+    app.clear_edit_pdf()
+    app.root.update()
+    assert app.edit_drop.winfo_ismapped()
+    assert not app.visual_text_tab.winfo_ismapped()
+
+
+def test_fit_zoom_is_relative_to_current_zoom(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._show_page("edit")
+    source = _text_pdf(tmp_path)
+    app._reset_edit_session(source, 1)
+    app._load_visual_text_page()
+    app.root.update()
+    app._set_viewer_zoom(200)
+    app._zoom_fit_viewer()
+    first = app._viewer_zoom
+    app._zoom_fit_viewer()
+    assert abs(app._viewer_zoom - first) <= 1
+
+
+def test_edit_worker_failure_shows_error(scratch_app, monkeypatch) -> None:
+    app = scratch_app
+    errors = []
+    monkeypatch.setattr(
+        gui_module.messagebox, "showerror",
+        lambda title, message, **kwargs: errors.append(message),
+    )
+    monkeypatch.setattr(app.root, "after", lambda *args: None)
+    app.events.put(("edit-failed", "Cannot save PDF"))
+    app._poll_events()
+    assert errors == ["Cannot save PDF"]
+    assert app.edit_status_var.get() == "Edit failed"
 
 
 def test_utilities_page_owns_the_pdf_tools(scratch_app) -> None:

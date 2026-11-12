@@ -1,12 +1,19 @@
 # PDF-X — Build and Release Notes
 
-**Current version: 0.1.7**
+**Current version: 0.1.8**
 
 This document lists the changelog of PDF-X.
 
 ---
 
 ## 1. Release history
+
+### Version 0.1.8
+
+- Added drag-and-drop loading and an optional maximized editing window.
+- Fixed text-box editing, line deselection and saving redactions with text edits.
+- Improved text-box wrapping, Fit zoom and editing controls.
+- Documented visual editing and redaction limitations in the README.
 
 ### Version 0.1.7
 

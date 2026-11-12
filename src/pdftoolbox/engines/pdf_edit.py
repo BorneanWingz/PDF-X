@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import ctypes
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import floor
 from pathlib import Path
@@ -473,11 +474,8 @@ def redact_lines(
 ) -> Path:
     """Remove the text objects behind ``lines`` and paint a black bar over them.
 
-    NOTE: this is a REAL redaction, not a cover box. PDFium drops the text
-    object from the page's content stream, so the characters are no longer in
-    the text layer and cannot be copied out; the black bar marks the spot.
-    Because the edit rewrites the page, the page order and rotations are
-    applied in the same pass.
+    PDFium removes overlapping text objects; the black bar marks their location.
+    Images, annotations and other content are not redacted by this operation.
     """
     if not lines:
         raise ConversionError("no lines to redact")
@@ -492,10 +490,7 @@ def redact_lines(
     sequence = _validate_pages(order, count) if order else list(range(1, count + 1))
     rotations = rotations or {}
 
-    # NOTE: PDFium rewrites the content stream, so it writes the file that the
-    # page order and rotations are taken from; the result is then copied into
-    # the final PDF by pypdf, which keeps one writer for the whole app.
-    scratch = out_path.with_name(f".{out_path.stem}-redact.pdf")
+    scratch = io.BytesIO()
     doc = pdfium.PdfDocument(str(src))
     try:
         by_page: dict[int, list[TextMatch]] = {}
@@ -529,14 +524,15 @@ def redact_lines(
                         page_obj.close()
                     except Exception:  # noqa: BLE001 - already closed
                         pass
-        doc.save(str(scratch))
+        doc.save(scratch)
     except (pdfium.PdfiumError, OSError) as exc:
         raise ConversionError(f"cannot redact {Path(src).name}: {exc}") from exc
     finally:
         doc.close()
 
     try:
-        redacted = _open_reader(scratch)
+        scratch.seek(0)
+        redacted = PdfReader(scratch)
         writer = PdfWriter()
         for number in sequence:
             page = redacted.pages[number - 1]
@@ -558,10 +554,7 @@ def redact_lines(
         _copy_metadata(redacted, writer)
         return _write(writer, out_path)
     finally:
-        try:
-            scratch.unlink()
-        except OSError:
-            pass
+        scratch.close()
 
 
 def _redaction_reader(width: float, height: float, lines: list[TextMatch]) -> PdfReader:
@@ -983,37 +976,45 @@ def edit_text_lines(
 
 
 def _draw_lines(pdf, item: PlacedText, page_height: float) -> None:
-    """Draw a placed item, one line per ``\\n``, inside its box when it has one."""
+    """Draw placed text, wrapping to its box width when specified."""
     from reportlab.lib.colors import Color
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
     font = FontFace(item.font_path, item.font_index) if item.font_path else None
     pdf.setFillColor(Color(*item.color))
-    pdf.setFont(_register_text_font(font, item.text), item.font_size)
-    lines = item.text.split("\n")
+    font_name = _register_text_font(font, item.text.replace("\n", ""))
+    pdf.setFont(font_name, item.font_size)
+    lines: list[str] = []
+    for line in item.text.split("\n"):
+        if item.width:
+            lines.extend(_wrap_line(
+                line, item.width,
+                lambda text: stringWidth(text, font_name, item.font_size),
+            ))
+        else:
+            lines.append(line)
     leading = item.font_size * 1.2
-    box_width = item.width
     for offset, line in enumerate(lines):
-        # NOTE: reportlab's origin is bottom-left, so the top-down anchor is
-        # converted here; each further line steps down by the leading
         y = page_height - item.top - item.font_size - offset * leading
-        if box_width and line:
-            line = _wrap_line(pdf, line, item.font_size, box_width, stringWidth)
         pdf.drawString(item.x, y, line)
 
 
-def _wrap_line(pdf, line: str, size: float, box_width: float, string_width) -> str:
-    """Clip a line to the box width, adding an ellipsis when it is cut.
-
-    NOTE: the on-canvas box wraps the words itself, so a line only reaches here
-    when the user typed a single long word that cannot be broken.
-    """
-    name = pdf._fontname
-    if string_width(line, name, size) <= box_width:
-        return line
-    while line and string_width(line + "\u2026", name, size) > box_width:
-        line = line[:-1]
-    return line + "\u2026" if line else ""
+def _wrap_line(
+    line: str, width: float, measure: Callable[[str], float]
+) -> list[str]:
+    """Wrap without discarding text, including words wider than the box."""
+    result: list[str] = []
+    while line and measure(line) > width:
+        end = 1
+        while end < len(line) and measure(line[:end + 1]) <= width:
+            end += 1
+        space = line.rfind(" ", 0, end + 1)
+        if 0 < space < end:
+            end = space + 1
+        result.append(line[:end])
+        line = line[end:]
+    result.append(line)
+    return result
 
 
 def _text_reader(width: float, height: float, items: list[PlacedText]) -> PdfReader:

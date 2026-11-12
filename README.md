@@ -1,6 +1,6 @@
 # PDF-X — Offline PDF Converter and OCR Toolbox
 
-[![Latest version](https://img.shields.io/badge/version-0.1.7-crimson)](https://github.com/BorneanWingz/PDF-X)
+[![Latest version](https://img.shields.io/badge/version-0.1.8-crimson)](https://github.com/BorneanWingz/PDF-X)
 [![Platform](https://img.shields.io/badge/platform-Windows-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE.md)
 [![Works offline](https://img.shields.io/badge/works-offline-orange)]()
@@ -52,15 +52,31 @@ range** keeps only the requested pages.
 
 ### Edit PDF
 
+- Import a PDF or drag and drop one onto the empty editor or page preview.
+- Use **Open a new window** beside the document name for a maximized editor;
+  closing it returns the same editing session to the tab.
 - Change selectable lines of text or add a new text box anywhere on a page.
+- Select **Queue Change** to include a line correction when saving. Click a
+  blank area to deselect a line; queue its correction first.
 - Choose a font and size, and move or resize added text boxes.
+- Click outside a text box to finish editing it; **Apply Changes** saves it.
+- Text wraps to the box width; text taller than the box extends below it in the
+  saved PDF, so check the page before sharing.
 - Use **Undo**, **Redo**, **Zoom** and page navigation while editing.
 - **Apply Changes** saves page changes and text changes together as one new PDF.
-- **Redact Line** removes the selected text and places a black bar over it.
+- **Redact Line** removes overlapping text objects and places a black bar over
+  the selected line.
+
+Line corrections are visual overlays: the original text remains searchable
+underneath. Redaction does not remove underlying images, annotations, metadata
+or other copies of text. In particular, redacting an OCR text layer does not
+remove the text from the scanned image. Inspect the output carefully and use a
+dedicated redaction tool for sensitive information.
 
 For scanned documents, first create a searchable PDF on **Convert File**. The
 visual editor works with upright pages and edits text line by line rather than
-rearranging whole paragraphs.
+rearranging whole paragraphs. Undo and Redo apply to text edits and boxes, not
+page changes made on Organise PDF.
 
 ### Utilities
 
@@ -116,7 +132,14 @@ converters, optional plugins and scan-reading models.
 
 ## Updates
 
-**Current version: 0.1.7**
+**Current version: 0.1.8**
+
+### Version 0.1.8
+
+- Added drag-and-drop loading and an optional maximized editing window.
+- Fixed text-box editing, line deselection and saving redactions with text edits.
+- Improved text-box wrapping, Fit zoom and editing controls.
+- Documented visual editing and redaction limitations.
 
 ### Version 0.1.7
 
@@ -171,4 +194,4 @@ full licence and the component licensing map.
 
 ---
 
-*PDF-X · Version 0.1.7 · Author: Dr. Longwin Sii*
+*PDF-X · Version 0.1.8 · Author: Dr. Longwin Sii*

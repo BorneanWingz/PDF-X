@@ -399,6 +399,26 @@ class TestTextEditing:
             pdf_edit.add_text(source, tmp_path / "x.pdf", [])
 
 
+@pytest.mark.parametrize("embedded_font", [False, True])
+def test_added_text_box_wraps_without_losing_words(
+    tmp_path: Path, embedded_font: bool
+) -> None:
+    import reportlab
+
+    source = _make_pdf(tmp_path / "book.pdf", ["Background"])
+    item = pdf_edit.PlacedText(
+        page=1, text="one two three\nsupercalifragilistic",
+        x=72, top=150, font_size=12, width=35, height=20,
+        font_path=Path(reportlab.__file__).parent / "fonts" / "Vera.ttf"
+        if embedded_font else None,
+    )
+    out = pdf_edit.apply_edits(source, tmp_path / "out.pdf", additions=[item])
+    text = _page_texts(out)[0]
+    assert [line.rstrip() for line in text.splitlines()][1:4] == ["one", "two", "three"]
+    assert "supercalifragilistic" in text.replace("\n", "")
+    assert "\u2026" not in text
+
+
 class TestRedact:
     def test_redact_lines_removes_text_from_text_layer(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["SECRET token 1234", "keep this line"])
@@ -415,6 +435,20 @@ class TestRedact:
         source = _make_pdf(tmp_path / "book.pdf", ["Line"])
         with pytest.raises(ConversionError, match="no lines to redact"):
             pdf_edit.redact_lines(source, tmp_path / "out.pdf", [])
+
+    def test_redaction_creates_output_directory_without_touching_existing_scratch(
+        self, tmp_path: Path
+    ) -> None:
+        source = _make_pdf(tmp_path / "book.pdf", ["Secret line"])
+        target = tmp_path / "new folder" / "redacted.pdf"
+        out = pdf_edit.redact_lines(source, target, pdf_edit.text_lines(source, 1))
+        assert out == target
+        assert "Secret line" not in _page_texts(out)[0]
+
+        existing = target.with_name(".redacted-redact.pdf")
+        existing.write_bytes(b"keep this file")
+        pdf_edit.redact_lines(source, target, pdf_edit.text_lines(source, 1))
+        assert existing.read_bytes() == b"keep this file"
 
 
 class TestCompress:

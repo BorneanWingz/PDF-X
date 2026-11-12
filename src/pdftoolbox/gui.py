@@ -1,4 +1,4 @@
-"""Tkinter GUI: zero extra dependencies, fully offline.
+﻿"""Tkinter GUI: zero extra dependencies, fully offline.
 
 Threading rule: all conversions run on a worker thread; results are pushed
 back through a queue and rendered from an ``after`` poll, so the window
@@ -123,6 +123,7 @@ class App:
         self._text_undo: list[TextEditState] = []
         self._text_redo: list[TextEditState] = []
         self._text_history_current: TextEditState | None = None
+        self._editor_window_open = False
         self.events: queue.Queue[tuple] = queue.Queue()
         self.worker: threading.Thread | None = None
 
@@ -960,8 +961,7 @@ class App:
             self.edit_tab,
             "Edit PDF",
             "Edit the text of an existing PDF: correct a line, add a text box, "
-            "or redact it. Page order, splitting and extraction live on the "
-            "Organise PDF page. Changes are saved as a new file; the original "
+            "or redact it. Changes are saved as a new file; the original "
             "is untouched.",
         )
         header.pack(anchor="w", pady=(0, 10))
@@ -974,15 +974,44 @@ class App:
         self.edit_source_label = ttk.Label(source_row, textvariable=self.edit_source_var,
                                            style="Card.TLabel")
         self.edit_source_label.pack(side="left", padx=14)
+        self.edit_window_button = ttk.Button(
+            source_row, text="Open a new window", command=self._open_editor_window,
+            style="Card.TButton", state="disabled",
+        )
+        self.edit_window_button.pack(side="right", padx=(0, 14))
         self.edit_clear_button = ttk.Button(source_row, text="Clear",
                                             command=self.clear_edit_pdf,
                                             style="Card.TButton")
         self.edit_clear_button.pack(side="right", padx=14)
 
+        self.edit_drop = theme.dashed_drop_zone(
+            self.edit_tab, height=230, on_drop=self._on_edit_drop
+        )
+        content = self.edit_drop.content
+        self.edit_drop_badge = theme.draw_pdf_badge(64, master=self.root)
+        tk.Label(content, image=self.edit_drop_badge, background=theme.SURFACE).pack(
+            pady=(8, 2)
+        )
+        tk.Label(
+            content, text="Drop PDF here or", background=theme.SURFACE,
+            foreground=theme.INK, font=("TkDefaultFont", 11),
+        ).pack()
+        ttk.Button(
+            content, text="Import PDF", command=self.open_edit_pdf,
+            style="Accent.TButton",
+        ).pack(pady=6)
+        tk.Label(
+            content, text="No PDF loaded yet.", background=theme.SURFACE,
+            foreground=theme.MUTED, font=("TkDefaultFont", 9),
+        ).pack()
+        for widget in (self.edit_drop, content, *content.winfo_children()):
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_edit_drop)
+
         # NOTE: the text editor gets its own frame so it can keep its grid
         # layout (a single row that takes the spare height) while the page
         # itself is packed. Mixing pack and grid in one container is an error.
-        self.visual_text_tab = ttk.Frame(self.edit_tab)
+        self.visual_text_tab = tk.Frame(self.edit_tab, background=theme.CANVAS)
         self.visual_text_tab.pack(fill="both", expand=True)
         self._build_visual_text_area()
         self._build_edit_output_area()
@@ -1101,6 +1130,7 @@ class App:
 
     def _build_edit_output_area(self) -> None:
         frame = theme.card(self.edit_tab)
+        self.edit_output_frame = frame
         # NOTE: expand=True hands the window's spare height to the text editor,
         # which is packed above; a plain fill="x" row would swallow it instead
         # and the page viewer would never grow on a taller window.
@@ -1363,20 +1393,40 @@ class App:
         self.visual_text_prev = ttk.Button(
             nav, text="◀", width=3, command=lambda: self._navigate_visual_text(-1)
         )
-        self.visual_text_prev.pack(side="left")
-        ttk.Label(nav, textvariable=self.visual_text_page_var).pack(side="left", padx=8)
+        self.visual_text_prev.grid(row=0, column=0)
+        ttk.Label(nav, textvariable=self.visual_text_page_var).grid(row=0, column=1, padx=8)
         self.visual_text_next = ttk.Button(
             nav, text="▶", width=3, command=lambda: self._navigate_visual_text(1)
         )
-        self.visual_text_next.pack(side="left")
+        self.visual_text_next.grid(row=0, column=2, padx=(0, 8))
         self.text_undo_button = ttk.Button(
             nav, text="↶", width=3, command=self._undo_text_edit, state="disabled"
         )
-        self.text_undo_button.pack(side="left", padx=(12, 0))
+        self.text_undo_button.grid(row=0, column=3, padx=(4, 0), sticky="ew")
         self.text_redo_button = ttk.Button(
             nav, text="↷", width=3, command=self._redo_text_edit, state="disabled"
         )
-        self.text_redo_button.pack(side="left", padx=(4, 0))
+        self.text_redo_button.grid(row=0, column=4, padx=(4, 0), sticky="ew")
+
+        ttk.Label(nav, text="Zoom:").grid(row=0, column=5, padx=(12, 0))
+        ttk.Button(
+            nav, text="−", width=3, command=lambda: self._zoom_viewer(-1)
+        ).grid(row=0, column=6, padx=(4, 0), sticky="ew")
+        self.viewer_zoom_var = tk.StringVar(value="100%")
+        ttk.Label(nav, textvariable=self.viewer_zoom_var, width=6, anchor="center").grid(
+            row=0, column=7, padx=4
+        )
+        ttk.Button(
+            nav, text="+", width=3, command=lambda: self._zoom_viewer(1)
+        ).grid(row=0, column=8, padx=(4, 0), sticky="ew")
+        ttk.Button(nav, text="Fit", command=self._zoom_fit_viewer).grid(
+            row=0, column=9, padx=(8, 0)
+        )
+        ttk.Label(nav, text="Ctrl+wheel zooms", foreground="#555").grid(
+            row=0, column=10, padx=(10, 0)
+        )
+        for column in (3, 4, 6, 8):
+            nav.columnconfigure(column, uniform="edit-icons")
 
         # NOTE: the canvas asks for a good chunk of height, so the notebook
         # (which is as tall as its tallest tab) grows to give the document the
@@ -1400,6 +1450,8 @@ class App:
         self.visual_text_canvas.bind("<Button-1>", self._visual_text_click)
         self.visual_text_canvas.bind("<B1-Motion>", self._drag_placed_text)
         self.visual_text_canvas.bind("<ButtonRelease-1>", self._end_text_drag)
+        self.visual_text_canvas.drop_target_register(DND_FILES)
+        self.visual_text_canvas.dnd_bind("<<Drop>>", self._on_edit_drop)
         # NOTE: the wheel scrolls the page, and Ctrl+wheel zooms, so a long
         # document can be read without reaching for the scrollbar
         self.visual_text_canvas.bind("<MouseWheel>", self._on_viewer_wheel)
@@ -1411,30 +1463,6 @@ class App:
         self.visual_text_canvas.tag_bind(
             "placed-text-border", "<Leave>", self._on_text_box_border_leave
         )
-
-        # ---- zoom row: keeps the page readable without a bigger window ----
-        zoom_row = ttk.Frame(font_row)
-        # NOTE: the zoom controls sit at the far end of the font row
-        zoom_row.pack(side="right")
-        ttk.Label(zoom_row, text="Zoom:").pack(side="left")
-        ttk.Button(
-            zoom_row, text="−", width=3, command=lambda: self._zoom_viewer(-1)
-        ).pack(side="left", padx=(4, 0))
-        self.viewer_zoom_var = tk.StringVar(value="100%")
-        ttk.Label(zoom_row, textvariable=self.viewer_zoom_var, width=6, anchor="center").pack(
-            side="left", padx=4
-        )
-        ttk.Button(
-            zoom_row, text="+", width=3, command=lambda: self._zoom_viewer(1)
-        ).pack(side="left")
-        ttk.Button(
-            zoom_row, text="Fit", command=self._zoom_fit_viewer
-        ).pack(side="left", padx=(8, 0))
-        ttk.Label(
-            zoom_row,
-            text="Ctrl+wheel zooms",
-            foreground="#555",
-        ).pack(side="right", padx=(10, 0))
 
         # NOTE: the box tools and the font share one row, so the page viewer
         # keeps the space that two separate rows would have taken from it
@@ -1496,6 +1524,8 @@ class App:
             background=theme.SURFACE,
             foreground=theme.INK,
         )
+        self.placed_text_entry.drop_target_register(DND_FILES)
+        self.placed_text_entry.dnd_bind("<<Drop>>", self._on_edit_drop)
         # NOTE: typing in the on-canvas box updates the item straight away, and
         # the box scrolls when the text is longer than the box on the page
         self.placed_text_entry.bind("<<Modified>>", self._on_placed_text_change)
@@ -1528,20 +1558,22 @@ class App:
         # - the widget swallows it - which is why Remove Box appeared dead.
         self.placed_text_entry.bind("<Button-1>", self._on_box_text_press, add="+")
         self.visual_text_entry.configure(state="disabled")
+        line_actions = ttk.Frame(editor)
+        line_actions.pack(side="left", padx=(6, 0))
         self.visual_text_queue_button = ttk.Button(
-            editor,
+            line_actions,
             text="Queue Change",
             command=self._queue_visual_text_change,
             state="disabled",
         )
-        self.visual_text_queue_button.pack(side="left", padx=(6, 0))
+        self.visual_text_queue_button.pack(fill="x")
         self.visual_text_redact_button = ttk.Button(
-            editor,
+            line_actions,
             text="Redact Line",
             command=self._queue_visual_text_redact,
             state="disabled",
         )
-        self.visual_text_redact_button.pack(side="left", padx=(4, 0))
+        self.visual_text_redact_button.pack(fill="x", pady=(2, 0))
         # NOTE: the box and the variable are kept in step both ways: typing in
         # the box updates the variable, and setting the variable (for a
         # selected line or box) rewrites the box
@@ -1749,7 +1781,7 @@ class App:
         try:
             count = pdf_edit.page_count(source)
         except ConversionError as exc:
-            messagebox.showerror("PDF-X", str(exc))
+            messagebox.showerror("PDF-X", str(exc), parent=self._edit_dialog_parent())
             return
         self._reset_edit_session(source, count)
         self._load_visual_text_page()
@@ -1762,7 +1794,12 @@ class App:
         fresh import and Clear cannot leave edits, undo history, or a stale
         preview pointing at a different file.
         """
+        if source is None and getattr(self, "_editor_window_open", False):
+            self._close_editor_window()
         self.edit_source = source
+        window_button = getattr(self, "edit_window_button", None)
+        if window_button is not None:
+            window_button.configure(state="normal" if source is not None else "disabled")
         self.edit_pages = list(range(1, count + 1))
         self.edit_rotations = {}
         self.visual_text_page = 1
@@ -1792,6 +1829,10 @@ class App:
             self._show_drop_zone(True)
         else:
             self.edit_source_var.set(f"{source.name}  ({count} pages)")
+            if getattr(self, "_editor_window_open", False):
+                self.root.tk.call(
+                    "wm", "title", self.visual_text_tab._w, f"PDF-X - Edit PDF - {source.name}"
+                )
             self._set_organise_source(f"{source.name}  ({count} pages)")
             self._set_organise_status("Ready")
             self._remember_dir(source.resolve().parent)
@@ -1825,6 +1866,16 @@ class App:
         while there is nothing to edit. Once a file is open the page list and
         the toolbar take the space instead.
         """
+        edit_drop = getattr(self, "edit_drop", None)
+        editor = getattr(self, "visual_text_tab", None)
+        if edit_drop is not None and editor is not None:
+            if visible:
+                editor.pack_forget()
+                edit_drop.pack(fill="both", expand=True, before=self.edit_output_frame)
+            else:
+                edit_drop.pack_forget()
+                if not getattr(self, "_editor_window_open", False):
+                    editor.pack(fill="both", expand=True, before=self.edit_output_frame)
         zone = getattr(self, "organise_drop", None)
         pages = getattr(self, "organise_pages", None)
         if zone is None or pages is None:
@@ -1839,6 +1890,92 @@ class App:
         else:
             zone.pack_forget()
             pages.pack(fill="both", expand=True)
+
+    def _open_editor_window(self) -> None:
+        """Move the existing editor into a larger, separate window."""
+        if self.edit_source is None:
+            return
+        if getattr(self, "_editor_window_open", False):
+            self.root.tk.call("raise", self.visual_text_tab._w)
+            return
+        self._on_editor_text_change()
+        if self.selected_placed_text is not None:
+            self._on_placed_text_change()
+        editor = self.visual_text_tab
+        try:
+            self.root.tk.call("wm", "manage", editor._w)
+        except tk.TclError as exc:
+            messagebox.showerror("PDF-X", f"Cannot open editor window: {exc}")
+            return
+        self._editor_window_open = True
+        self.root.tk.call("wm", "title", editor._w, f"PDF-X - Edit PDF - {self.edit_source.name}")
+        self.root.tk.call("wm", "minsize", editor._w, 800, 600)
+        self._editor_window_close_command = self.root.register(self._close_editor_window)
+        self.root.tk.call(
+            "wm", "protocol", editor._w, "WM_DELETE_WINDOW",
+            self._editor_window_close_command,
+        )
+
+        actions = ttk.Frame(editor)
+        self._expanded_editor_actions = actions
+        actions.grid(row=5, column=0, sticky="ew", padx=6, pady=(0, 8))
+        actions.columnconfigure(1, weight=1)
+        ttk.Label(actions, text="Output folder:").grid(row=0, column=0, sticky="w")
+        self._expanded_output_entry = ttk.Entry(actions, textvariable=self.edit_out_var)
+        self._expanded_output_entry.grid(row=0, column=1, sticky="ew", padx=6)
+        self._expanded_browse_button = ttk.Button(
+            actions, text="Browse", command=self.pick_edit_output
+        )
+        self._expanded_browse_button.grid(row=0, column=2, padx=(0, 6))
+        ttk.Checkbutton(
+            actions, text="Output in same folder", variable=self.edit_same_folder_var,
+            command=self._toggle_edit_same_folder,
+        ).grid(row=0, column=3, sticky="w")
+        self.expanded_edit_apply_button = ttk.Button(
+            actions, text="Apply Changes", command=self.run_organise,
+            style="Accent.TButton",
+        )
+        self.expanded_edit_apply_button.grid(row=1, column=0, pady=(6, 0), sticky="w")
+        self._expanded_edit_progress = ttk.Progressbar(actions, mode="determinate")
+        self._expanded_edit_progress.grid(row=1, column=1, padx=6, pady=(6, 0), sticky="ew")
+        ttk.Label(actions, textvariable=self.edit_status_var).grid(
+            row=1, column=2, pady=(6, 0), sticky="w"
+        )
+        ttk.Button(actions, text="Close Window", command=self._close_editor_window).grid(
+            row=1, column=3, pady=(6, 0), sticky="e"
+        )
+        self._update_edit_output_state()
+        self.expanded_edit_apply_button.configure(state=self.edit_apply_button.cget("state"))
+        try:
+            self.root.tk.call("wm", "state", editor._w, "zoomed")
+        except tk.TclError:
+            self.root.tk.call(
+                "wm", "geometry", editor._w,
+                f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()}+0+0",
+            )
+
+    def _edit_dialog_parent(self) -> tk.Misc:
+        if getattr(self, "_editor_window_open", False):
+            return self.visual_text_tab
+        return self.root
+
+    def _close_editor_window(self) -> None:
+        if not getattr(self, "_editor_window_open", False):
+            return
+        self._on_editor_text_change()
+        if self.selected_placed_text is not None:
+            self._on_placed_text_change()
+        editor = self.visual_text_tab
+        self._expanded_editor_actions.destroy()
+        del self._expanded_output_entry
+        del self._expanded_browse_button
+        del self.expanded_edit_apply_button
+        del self._expanded_edit_progress
+        self.root.tk.call("wm", "protocol", editor._w, "WM_DELETE_WINDOW", "")
+        self.root.tk.call("wm", "forget", editor._w)
+        self.root.deletecommand(self._editor_window_close_command)
+        self._editor_window_open = False
+        editor.pack(fill="both", expand=True, before=self.edit_output_frame)
 
     def clear_edit_pdf(self) -> None:
         """Drop the imported PDF and everything the editor was holding for it."""
@@ -1870,7 +2007,7 @@ class App:
             "Use the Convert File tab first: choose SEARCHABLE-PDF as the "
             "target, then import the converted copy here. You can still add "
             "text boxes to this PDF.",
-            parent=self.root,
+            parent=self._edit_dialog_parent(),
         )
 
     def _text_edit_state(self) -> TextEditState:
@@ -2171,6 +2308,8 @@ class App:
         page = self.visual_text_page + step
         if not 1 <= page <= self.visual_text_total_pages:
             return
+        if self.selected_placed_text is not None:
+            self._finish_text_editing()
         self.visual_text_page = page
         self.selected_visual_text = None
         self.selected_placed_text = None
@@ -2192,18 +2331,21 @@ class App:
         if not self._edit_ready() or self.edit_source is None:
             return
         if self.visual_text_image is None:
-            messagebox.showerror("PDF-X", "The page preview is unavailable.")
+            messagebox.showerror("PDF-X", "The page preview is unavailable.",
+                                 parent=self._edit_dialog_parent())
             return
         font = self.system_fonts.get(self.text_font_var.get())
         if font is None:
-            messagebox.showerror("PDF-X", "Select an installed font first.")
+            messagebox.showerror("PDF-X", "Select an installed font first.",
+                                 parent=self._edit_dialog_parent())
             return
         try:
             size = int(self.add_text_size_var.get())
             if not 4 <= size <= 200:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("PDF-X", "Font size must be between 4 and 200.")
+            messagebox.showerror("PDF-X", "Font size must be between 4 and 200.",
+                                 parent=self._edit_dialog_parent())
             return
         # NOTE: the new box is positioned in PDF points, so the canvas position
         # is scaled back before it is stored
@@ -2267,6 +2409,9 @@ class App:
         source of truth while it has the focus. The change is pushed into the
         master's variable, which updates the item and the editor box.
         """
+        if not self.placed_text_entry.edit_modified():
+            return
+        self.placed_text_entry.edit_modified(False)
         if self._updating_text_controls:
             return
         if self.selected_placed_text is None:
@@ -2387,7 +2532,7 @@ class App:
         if image_width <= 1 or image_height <= 1:
             return
         scale = min(canvas_width / image_width, canvas_height / image_height)
-        self._set_viewer_zoom(round(scale * 100))
+        self._set_viewer_zoom(round(scale * self._viewer_zoom))
 
     def _draw_placed_text(self) -> None:
         from PIL import Image, ImageDraw, ImageFont, ImageTk
@@ -2415,10 +2560,22 @@ class App:
             except OSError as exc:
                 self.text_font_hint_var.set(f"Cannot load font: {exc}")
                 continue
-            width = max(20, int(item.width * scale) if item.width else int(font.getlength(item.text)) + 4)
+            source_lines = item.text.split("\n")
+            width = max(20, int(item.width * scale) if item.width else
+                        int(max(font.getlength(line) for line in source_lines)) + 4)
             height = max(20, int(item.height * scale) if item.height else int(font_size * 1.5))
-            image = Image.new("RGBA", (width, height))
-            ImageDraw.Draw(image).text((2, font_size), item.text, font=font, fill="black", anchor="ls")
+            lines: list[str] = []
+            for line in source_lines:
+                if item.width:
+                    lines.extend(pdf_edit._wrap_line(line, item.width * scale, font.getlength))
+                else:
+                    lines.append(line)
+            leading = font_size * 1.2
+            image = Image.new("RGBA", (width, max(height, int(font_size + len(lines) * leading))))
+            draw = ImageDraw.Draw(image)
+            for offset, line in enumerate(lines):
+                draw.text((0, font_size + offset * leading), line,
+                          font=font, fill="black", anchor="ls")
             photo = ImageTk.PhotoImage(image)
             self._placed_images.append(photo)
             tags = ("placed-text", f"box-{index}")
@@ -2453,7 +2610,7 @@ class App:
                 )
         if focus_in_box and self.selected_placed_text is not None:
             self.placed_text_entry.focus_set()
-            self.placed_text_entry.icursor(cursor)
+            self.placed_text_entry.mark_set("insert", cursor)
 
     def _scroll_placed_text(self, event) -> str:
         """Scroll the on-canvas text box with the mouse wheel."""
@@ -2474,6 +2631,7 @@ class App:
             return
         self.placed_text_entry.delete("1.0", "end")
         self.placed_text_entry.insert("1.0", text)
+        self.placed_text_entry.edit_modified(False)
 
     def _on_text_box_border_enter(self, _event) -> None:
         self.visual_text_canvas.configure(cursor="fleur")
@@ -2514,6 +2672,8 @@ class App:
                     return
                 if tag.startswith("box-"):
                     index = int(tag[4:])
+                    if self.selected_placed_text is not None and self.selected_placed_text != index:
+                        self._finish_text_editing()
                     self._select_placed_text(index)
                     item = self.placed_text[index]
                     # NOTE: the drag offset is in canvas pixels, while the item
@@ -2530,7 +2690,15 @@ class App:
         # a click anywhere else ends the box edit, as the user asked
         self._finish_text_editing()
         self.selected_placed_text = None
+        had_selected_line = self.selected_visual_text is not None
+        self.selected_visual_text = None
+        self.visual_text_entry.configure(state="disabled")
+        self.visual_text_queue_button.configure(state="disabled")
+        self.visual_text_redact_button.configure(state="disabled")
+        self._draw_placed_text()
         self._select_visual_text(event)
+        if had_selected_line and self.selected_visual_text is None:
+            self._load_visual_text_page()
         self._sync_text_history()
 
     def _on_box_text_press(self, event) -> None:
@@ -2580,6 +2748,7 @@ class App:
         """
         if self.selected_placed_text is None:
             return
+        self._on_placed_text_change()
         if self.root.focus_get() == self.placed_text_entry:
             self.visual_text_canvas.focus_set()
         self._update_placed_text()
@@ -2623,7 +2792,8 @@ class App:
 
     def _remove_text_box(self) -> None:
         if self.selected_placed_text is None:
-            messagebox.showinfo("PDF-X", "Select a text box to remove.")
+            messagebox.showinfo("PDF-X", "Select a text box to remove.",
+                                parent=self._edit_dialog_parent())
             return
         self.placed_text.pop(self.selected_placed_text)
         self.selected_placed_text = None
@@ -2672,6 +2842,9 @@ class App:
         destroy the user's selection, so typing over a Ctrl+A selection would
         insert at the caret instead of replacing the selected text.
         """
+        if not self.visual_text_entry.edit_modified():
+            return
+        self.visual_text_entry.edit_modified(False)
         if self._updating_text_controls:
             return
         text = self.visual_text_entry.get("1.0", "end-1c")
@@ -2794,7 +2967,8 @@ class App:
         self._load_visual_text_page()
         count = len(self.redacted_visual_text)
         self.visual_text_status_var.set(
-            f"{count} line(s) marked for redaction. Apply Changes writes the redacted PDF."
+            f"{count} line(s) marked. Redaction removes text objects only; "
+            "images and other content remain."
         )
 
     def _queue_visual_text_change(self) -> None:
@@ -2805,14 +2979,16 @@ class App:
         key = self._visual_text_key(match)
         font = self.system_fonts.get(self.text_font_var.get())
         if font is None:
-            messagebox.showerror("PDF-X", "Select an installed font.")
+            messagebox.showerror("PDF-X", "Select an installed font.",
+                                 parent=self._edit_dialog_parent())
             return
         try:
             size = int(self.add_text_size_var.get())
             if not 4 <= size <= 200:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("PDF-X", "Font size must be between 4 and 200.")
+            messagebox.showerror("PDF-X", "Font size must be between 4 and 200.",
+                                 parent=self._edit_dialog_parent())
             return
         self.visual_text_edits[key] = (match, replacement)
         self.visual_text_fonts[key] = font
@@ -2835,7 +3011,7 @@ class App:
 
     def _edit_ready(self) -> bool:
         if self.edit_source is None:
-            messagebox.showinfo("PDF-X", "Open a PDF first.")
+            messagebox.showinfo("PDF-X", "Open a PDF first.", parent=self._edit_dialog_parent())
             return False
         return True
 
@@ -2986,11 +3162,16 @@ class App:
         state = "disabled" if self.edit_same_folder_var.get() else "normal"
         self.edit_out_entry.configure(state=state)
         self.edit_browse_button.configure(state=state)
+        if getattr(self, "_editor_window_open", False):
+            self._expanded_output_entry.configure(state=state)
+            self._expanded_browse_button.configure(state=state)
 
     def pick_edit_output(self) -> None:
         current = self.edit_out_var.get().strip()
         start = current if current and Path(current).is_dir() else self._dialog_dir()
-        folder = filedialog.askdirectory(title="Select output folder", initialdir=start)
+        folder = filedialog.askdirectory(
+            title="Select output folder", initialdir=start, parent=self._edit_dialog_parent()
+        )
         if folder:
             self.edit_out_var.set(folder)
             self.config["edit_out_dir"] = folder
@@ -3022,6 +3203,12 @@ class App:
         self.edit_apply_button.configure(state=state)
         if not busy:
             self.edit_progress.configure(value=self.edit_progress["maximum"])
+        if getattr(self, "_editor_window_open", False):
+            self.expanded_edit_apply_button.configure(state=state)
+            if not busy:
+                self._expanded_edit_progress.configure(
+                    value=self._expanded_edit_progress["maximum"]
+                )
 
     def _edit_log_write(self, message: str) -> None:
         """Write an edit line to the internal log.
@@ -3056,19 +3243,32 @@ class App:
         correction stays with its page when the page is moved or turned.
         """
         if not self.edit_pages:
-            messagebox.showinfo("PDF-X", "No pages to save.")
+            messagebox.showinfo("PDF-X", "No pages to save.", parent=self._edit_dialog_parent())
             return
         if self.edit_source is None:
             return
+        if self.selected_placed_text is not None:
+            self._on_placed_text_change()
         src = self.edit_source
         order = list(self.edit_pages)
         rotations = dict(self.edit_rotations)
         edits = list(self.visual_text_edits.values())
+        additions = list(self.placed_text)
         fonts: list[FontFace | None] = [
             self.visual_text_fonts[key] for key in self.visual_text_edits
         ]
         sizes = [self.visual_text_sizes[key] for key in self.visual_text_edits]
         redactions = list(getattr(self, "redacted_visual_text", {}).values())
+        if any(
+            not item.text.strip() or item.font_path is None or not 4 <= item.font_size <= 200
+            for item in additions
+        ):
+            messagebox.showerror(
+                "PDF-X",
+                "Every text box needs text, an installed font, and a size from 4 to 200.",
+                parent=self._edit_dialog_parent(),
+            )
+            return
         # NOTE: redaction is content removal, unlike the visual overlay edits.
         # When both are pending, the overlay is written to a scratch file first
         # (page order untouched, so the line page numbers stay valid) and the
@@ -3102,21 +3302,11 @@ class App:
 
             def _redact_done(path: Path) -> None:
                 self.visual_text_status_var.set(
-                    f"Redacted copy saved: {path.name}. The removed text is out "
-                    "of the text layer and cannot be recovered."
+                    f"Redacted copy saved: {path.name}. Images and other content "
+                    "remain; verify before sharing."
                 )
 
             self._run_edit_task_custom(redact_work, _redact_done, "Redacted PDF copy saved")
-            return
-        additions = list(self.placed_text)
-        if any(
-            not item.text.strip() or item.font_path is None or not 4 <= item.font_size <= 200
-            for item in additions
-        ):
-            messagebox.showerror(
-                "PDF-X",
-                "Every text box needs text, an installed font, and a size from 4 to 200.",
-            )
             return
         # NOTE: the tag says an edited copy, because the text corrections are
         # drawn on top of the original text rather than replacing it
@@ -3808,6 +3998,7 @@ class App:
                     self._edit_log_write(f"FAILED  edit: {payload}")
                     self.edit_status_var.set("Edit failed")
                     self._set_edit_busy(False)
+                    messagebox.showerror("PDF-X", str(payload), parent=self._edit_dialog_parent())
                 elif kind == "fatal":
                     self._log(f"FATAL: {payload}")
                     self.status_var.set("Failed")
