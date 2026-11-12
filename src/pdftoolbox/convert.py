@@ -250,7 +250,11 @@ def list_targets(src: Path, pdf_inputs: int = 0) -> list[TargetOption]:
     if office.is_office_document(src):
         available = office.is_available()
         note = "" if available else "LibreOffice engine not installed"
-        return [TargetOption("pdf", "PDF", available, note)]
+        options = [TargetOption("pdf", "PDF", available, note)]
+        target = office.modern_office_format(src)
+        if target and src.suffix.lower() != f".{target}":
+            options.append(TargetOption(target, target.upper(), available, note))
+        return options
 
     return []
 
@@ -304,6 +308,8 @@ def convert(
         return _convert_from_pdf(src, key, out_dir, dpi, ocr_dpi, pages, on_progress)
 
     if key != "pdf":
+        if office.is_office_document(src) and key == office.modern_office_format(src):
+            return _convert_to_office(src, key, out_dir)
         raise ConversionError(
             f"target '{key}' is only supported for PDF inputs; "
             f"{src.name} can only be converted to PDF"
@@ -504,6 +510,23 @@ def _convert_to_pdf(src: Path, out_dir: Path | None) -> list[Path]:
         ]
 
     raise ConversionError(f"cannot convert {src.name} to PDF (unsupported type)")
+
+
+def _convert_to_office(src: Path, target: str, out_dir: Path | None) -> list[Path]:
+    tag_dir = out_dir if out_dir is not None else src.parent
+    tag_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="pdftoolbox-office-", dir=tag_dir
+    ) as scratch:
+        staged = office.office_to_format(src, target, Path(scratch))
+        destination = output_path(src, tag_dir, f".{target}")
+        try:
+            staged.replace(destination)
+        except OSError as exc:
+            raise ConversionError(
+                f"cannot save converted file {destination.name}: {exc}"
+            ) from exc
+    return [destination]
 
 
 def convert_many(

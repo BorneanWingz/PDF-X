@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pypdfium2 as pdfium
 import pytest
@@ -13,6 +14,7 @@ from pptx import Presentation
 from pdftoolbox.convert import convert, list_targets, normalize_target, parse_pages
 from pdftoolbox.convert import output_name, output_path
 from pdftoolbox.engines import ConversionError
+from pdftoolbox.engines import office
 
 
 def _assert_pdf(path: Path) -> None:
@@ -45,6 +47,45 @@ class TestTargetsAndParsing:
         options = list_targets(image_file)
         assert [option.key for option in options] == ["pdf"]
         assert options[0].available
+
+    @pytest.mark.parametrize(
+        ("suffix", "target"),
+        [
+            (".odt", "docx"),
+            (".ods", "xlsx"),
+            (".odp", "pptx"),
+        ],
+    )
+    def test_list_targets_office_modern_format(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        suffix: str, target: str,
+    ) -> None:
+        source = tmp_path / f"source{suffix}"
+        source.write_bytes(b"document")
+        monkeypatch.setattr(office, "is_available", lambda: True)
+
+        assert [option.key for option in list_targets(source)] == ["pdf", target]
+
+    def test_office_direct_conversion_uses_libreoffice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "report.odt"
+        source.write_bytes(b"document")
+        monkeypatch.setattr(office, "find_soffice", lambda: Path("soffice"))
+        monkeypatch.setattr(office, "engines_dir", lambda: tmp_path / "engine")
+
+        def fake_run(command, **_kwargs):
+            output_dir = Path(command[command.index("--outdir") + 1])
+            target = command[command.index("--convert-to") + 1]
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / f"{source.stem}.{target}").write_bytes(b"converted")
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(office.subprocess, "run", fake_run)
+        outputs = convert(source, "docx", out_dir=tmp_path / "out")
+
+        assert outputs[0].name == "report_pdfx.docx"
+        assert outputs[0].read_bytes() == b"converted"
 
     def test_list_targets_unknown(self, tmp_path: Path) -> None:
         weird = tmp_path / "file.xyz"

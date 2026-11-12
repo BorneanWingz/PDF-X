@@ -22,8 +22,9 @@ import ctypes
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from math import floor
+from math import ceil, floor
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pypdfium2 as pdfium
 from pypdf import PdfReader, PdfWriter
@@ -471,14 +472,13 @@ def redact_lines(
     lines: list[TextMatch],
     order: list[int] | None = None,
     rotations: dict[int, int] | None = None,
+    dpi: int = 200,
 ) -> Path:
-    """Remove the text objects behind ``lines`` and paint a black bar over them.
-
-    PDFium removes overlapping text objects; the black bar marks their location.
-    Images, annotations and other content are not redacted by this operation.
-    """
+    """Burn redaction boxes into page pixels and OCR the remaining visible text."""
     if not lines:
         raise ConversionError("no lines to redact")
+    if not 100 <= dpi <= 600:
+        raise ConversionError("redaction OCR DPI must be between 100 and 600")
     reader = _open_reader(src)
     count = len(reader.pages)
     if count == 0:
@@ -489,95 +489,116 @@ def redact_lines(
 
     sequence = _validate_pages(order, count) if order else list(range(1, count + 1))
     rotations = rotations or {}
-
-    scratch = io.BytesIO()
     doc = pdfium.PdfDocument(str(src))
     try:
         by_page: dict[int, list[TextMatch]] = {}
         for line in lines:
             by_page.setdefault(line.page, []).append(line)
-        for page_number, page_lines in by_page.items():
-            page = doc[page_number - 1]
-            height = float(page.get_height())
-            objects = list(page.get_objects())
+        writer = PdfWriter()
+        with TemporaryDirectory(prefix="pdfx-redact-") as tmp:
+            temp_dir = Path(tmp)
+            replacement_handles = []
             try:
-                for page_obj in objects:
-                    if page_obj.type != pdfium.raw.FPDF_PAGEOBJ_TEXT:
-                        continue
-                    left, bottom, right, top = page_obj.get_bounds()
-                    # PDFium reports the object box bottom-up; TextMatch is top-down
-                    obj_top = height - top
-                    obj_bottom = height - bottom
-                    for line in page_lines:
-                        overlap_x = min(right, line.x1) - max(left, line.x0)
-                        overlap_y = min(obj_bottom, line.bottom) - max(obj_top, line.top)
-                        if overlap_x > 0 and overlap_y > 0:
-                            page.remove_obj(page_obj)
-                            break
-                page.gen_content()
+                for number in sequence:
+                    page_lines = by_page.get(number, [])
+                    if page_lines:
+                        replacement = _redacted_searchable_page(
+                            doc[number - 1], page_lines, temp_dir, number, dpi
+                        )
+                        handle = replacement.open("rb")
+                        replacement_handles.append(handle)
+                        replacement_reader = PdfReader(handle)
+                        if len(replacement_reader.pages) != 1:
+                            raise ConversionError(
+                                f"could not rebuild redacted page {number}"
+                            )
+                        page = replacement_reader.pages[0]
+                        angle = rotations.get(number, 0) % 360
+                        if angle:
+                            page.rotate(angle)
+                        writer.add_page(page)
+                    else:
+                        page = reader.pages[number - 1]
+                        angle = rotations.get(number, 0) % 360
+                        if angle:
+                            page.rotate(angle)
+                        writer.add_page(page)
+                writer.add_metadata({"/Producer": "PDF Toolbox (offline)"})
+                return _write(writer, out_path)
             finally:
-                # NOTE: pypdfium2 tracks every child object; closing them here
-                # keeps the interpreter from warning about leaked handles. The
-                # PAGE itself stays open until doc.close().
-                for page_obj in objects:
-                    try:
-                        page_obj.close()
-                    except Exception:  # noqa: BLE001 - already closed
-                        pass
-        doc.save(scratch)
+                for handle in replacement_handles:
+                    handle.close()
     except (pdfium.PdfiumError, OSError) as exc:
         raise ConversionError(f"cannot redact {Path(src).name}: {exc}") from exc
     finally:
         doc.close()
 
-    try:
-        scratch.seek(0)
-        redacted = PdfReader(scratch)
-        writer = PdfWriter()
-        for number in sequence:
-            page = redacted.pages[number - 1]
-            angle = rotations.get(number, 0) % 360
-            if angle:
-                page.rotate(angle)
-            written = writer.add_page(page)
-            page_lines = [
-                line for line in by_page.get(number, [])
-            ]
-            if page_lines:
-                written.merge_page(
-                    _redaction_reader(
-                        float(written.mediabox.width),
-                        float(written.mediabox.height),
-                        page_lines,
-                    ).pages[0]
-                )
-        _copy_metadata(redacted, writer)
-        return _write(writer, out_path)
-    finally:
-        scratch.close()
 
-
-def _redaction_reader(width: float, height: float, lines: list[TextMatch]) -> PdfReader:
-    """A one-page overlay of solid black bars over the redacted lines."""
+def _redacted_searchable_page(
+    page,
+    lines: list[TextMatch],
+    temp_dir: Path,
+    page_number: int,
+    dpi: int,
+) -> Path:
+    """Rasterize one page with pixel masks, then OCR only unredacted regions."""
+    from PIL import ImageDraw
+    from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
 
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=(width, height))
-    pdf.setFillColorRGB(0, 0, 0)
+    from .ocr import OcrPage, ocr_image
+    from .searchable_pdf import make_searchable_pdf
+
+    scale = dpi / 72.0
+    image = page.render(scale=scale).to_pil().convert("RGB")
+    draw = ImageDraw.Draw(image)
+    masks: list[tuple[int, int, int, int]] = []
     for line in lines:
-        # a hair of padding hides any antialiased glyph edge left behind
-        pdf.rect(
-            line.x0 - 1,
-            height - line.bottom - 1,
-            line.width + 2,
-            line.height + 2,
-            stroke=0,
-            fill=1,
+        left = max(0, floor((line.x0 - 2) * scale))
+        top = max(0, floor((line.top - 2) * scale))
+        right = min(image.width - 1, ceil((line.x1 + 2) * scale))
+        bottom = min(image.height - 1, ceil((line.bottom + 2) * scale))
+        if right < left or bottom < top:
+            raise ConversionError("a redaction area falls outside its page")
+        mask = (left, top, right, bottom)
+        masks.append(mask)
+        draw.rectangle(mask, fill="black")
+
+    recognized, _ = ocr_image(image)
+    safe_lines = [
+        item
+        for item in recognized
+        if not any(
+            min(item.box[2], right) > max(item.box[0], left)
+            and min(item.box[3], bottom) > max(item.box[1], top)
+            for left, top, right, bottom in masks
         )
+    ]
+    ocr_page = OcrPage(
+        number=1,
+        width=image.width,
+        height=image.height,
+        lines=safe_lines,
+    )
+
+    width_pt = image.width / scale
+    height_pt = image.height / scale
+    image_pdf = temp_dir / f"redacted-{page_number}.pdf"
+    pdf = canvas.Canvas(str(image_pdf), pagesize=(width_pt, height_pt))
+    pdf.drawImage(
+        ImageReader(image),
+        0,
+        0,
+        width=width_pt,
+        height=height_pt,
+        preserveAspectRatio=False,
+    )
     pdf.showPage()
     pdf.save()
-    buffer.seek(0)
-    return PdfReader(buffer)
+
+    searchable_pdf = temp_dir / f"searchable-{page_number}.pdf"
+    make_searchable_pdf(image_pdf, searchable_pdf, [ocr_page], dpi)
+    return searchable_pdf
 
 
 def _page_matches(

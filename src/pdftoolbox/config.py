@@ -12,6 +12,9 @@ from typing import Any
 
 from .paths import config_path
 
+PROMO_MANIFEST_URL = "https://raw.githubusercontent.com/BorneanWingz/PDF-X/main/promo.json"
+_PLACEHOLDER_PROMO_URL = "https://example.invalid/pdf-toolbox/promo.json"
+
 DEFAULTS: dict[str, Any] = {
     "version": 1,
     "dpi": 150,
@@ -42,7 +45,7 @@ DEFAULTS: dict[str, Any] = {
     "edit_same_folder": True,
     "promo": {
         "enabled": True,
-        "url": "https://example.invalid/pdf-toolbox/promo.json",
+        "url": PROMO_MANIFEST_URL,
         "timeout_seconds": 2.0,
     },
 }
@@ -69,7 +72,14 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         data = json.loads(raw)
         if not isinstance(data, dict):
             return dict(DEFAULTS)
-        return _merge(DEFAULTS, data)
+        config = _merge(DEFAULTS, data)
+        promo_config = config.get("promo")
+        if (
+            isinstance(promo_config, dict)
+            and promo_config.get("url") == _PLACEHOLDER_PROMO_URL
+        ):
+            promo_config["url"] = PROMO_MANIFEST_URL
+        return config
     except (OSError, ValueError):
         return dict(DEFAULTS)
 

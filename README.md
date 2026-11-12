@@ -34,9 +34,27 @@ The **Pages** field accepts page numbers and ranges such as `1-3,5`, or can be
 left empty to use every page. Image and scan-reading quality controls are under
 **Advanced Options**.
 
+Office documents can also be converted directly to the modern format in their
+family: Word/Writer formats to DOCX, spreadsheets to XLSX, and presentations to
+PPTX. Other conversions continue to use PDF as the hub.
+
 Results can be saved beside the original with **Output in same folder**, or in a
 folder selected with **Browse**. These choices and the quality settings are
 remembered for the next run.
+
+When enabled, PDF-X checks the hosted `promo.json` on startup over HTTPS. A
+newer release appears as an optional clickable banner; versions below
+`minimum_version` are required to update. In that case, PDF-X displays the
+download URL, opens it in the default browser automatically, then closes. The
+build script updates the manifest version and keeps the immediately previous
+release as the minimum, so a new release can make versions two releases old
+obsolete. Push the updated manifest and publish the matching release for users
+to receive it. Set `promo.enabled` to `false` in the user config to disable the
+network check.
+
+When converting a scanned PDF to DOCX, XLSX or PPTX, PDF-X reminds you to first
+create a **SEARCHABLE-PDF** copy. You can inspect the OCR text in that copy
+before converting it to an Office format.
 
 ### Merge PDF
 
@@ -64,14 +82,13 @@ range** keeps only the requested pages.
   saved PDF, so check the page before sharing.
 - Use **Undo**, **Redo**, **Zoom** and page navigation while editing.
 - **Apply Changes** saves page changes and text changes together as one new PDF.
-- **Redact Line** removes overlapping text objects and places a black bar over
-  the selected line.
+- **Redact Line** burns a black mask into the selected area of each affected
+  page, then rebuilds that page and OCRs the remaining visible text.
 
 Line corrections are visual overlays: the original text remains searchable
-underneath. Redaction does not remove underlying images, annotations, metadata
-or other copies of text. In particular, redacting an OCR text layer does not
-remove the text from the scanned image. Inspect the output carefully and use a
-dedicated redaction tool for sensitive information.
+underneath. Redacted pages are rasterized, so their original vector content and
+annotations are flattened; OCR may not reproduce every unredacted word exactly.
+Inspect the output carefully before sharing it.
 
 For scanned documents, first create a searchable PDF on **Convert File**. The
 visual editor works with upright pages and edits text line by line rather than
@@ -107,6 +124,9 @@ The About screen shows the version and author information. The author is
 | --- | --- |
 | PDF | PNG, JPG, TIF, TXT, HTML, XLSX tables, PPTX, DOCX |
 | Scanned PDF | Searchable PDF, TXT, HTML, XLSX, PPTX, DOCX |
+| Word/Writer formats | DOCX |
+| Spreadsheet formats | XLSX |
+| Presentation formats | PPTX |
 | Any supported files | One merged PDF |
 | PDF in Organise or Edit | Reordered, rotated, deleted, split, extracted, watermarked, numbered or edited PDF |
 | PNG, JPG, TIF, BMP, WebP | PDF |
@@ -139,7 +159,13 @@ converters, optional plugins and scan-reading models.
 - Added drag-and-drop loading and an optional maximized editing window.
 - Fixed text-box editing, line deselection and saving redactions with text edits.
 - Improved text-box wrapping, Fit zoom and editing controls.
-- Documented visual editing and redaction limitations.
+- Redaction masks selected pixels, rebuilds affected pages and OCRs the visible
+  remainder.
+- Added same-family Office conversions and a reminder to OCR scanned PDFs before
+  converting to Office.
+- Added an optional update banner and a required-update flow that opens the
+  download page before closing obsolete versions.
+- Documented visual editing, redaction and update limitations.
 
 ### Version 0.1.7
 

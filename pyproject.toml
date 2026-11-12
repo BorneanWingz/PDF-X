@@ -14,6 +14,7 @@ dependencies = [
     "Pillow>=10.4.0",
     "reportlab>=4.2.5",
     "rapidocr-onnxruntime>=1.4.4",
+    "opencv-python-headless>=4.10.0.84",
     "tkinterdnd2>=0.4.2",
 ]
 

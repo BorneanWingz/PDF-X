@@ -5,7 +5,8 @@ param(
     # NOTE: the bundled LibreOffice engine is ~1.5 GB; skip it for a slim bundle
     # that expects SOFFICE_PATH or an on-PATH LibreOffice instead
     [switch]$SkipLibreOffice,
-    [switch]$SkipZip
+    [switch]$SkipZip,
+    [string]$OutputDirectory = "dist"
 )
 
 # Portable build for PDF Toolbox.
@@ -30,6 +31,12 @@ Set-Location $root
 # mode, so a clean zip carries no AGPL code for store distribution.
 $env:PDFTOOLBOX_BUILD_MODE = $Mode
 Write-Host "== PDF Toolbox build ($Mode) ==" -ForegroundColor Cyan
+if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
+    $distRoot = $OutputDirectory
+} else {
+    $distRoot = Join-Path $root $OutputDirectory
+}
+New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 
 if (-not $SkipInstall) {
     if ($Mode -eq "clean") {
@@ -47,11 +54,20 @@ $pyi = uv run --no-sync python -c "import PyInstaller; print(PyInstaller.__versi
 if ($LASTEXITCODE -ne 0) { throw "pyinstaller missing; run: uv sync --extra dev" }
 Write-Host "PyInstaller $pyi" -ForegroundColor Cyan
 
-Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
-uv run --no-sync python -m PyInstaller --noconfirm --clean --distpath dist --workpath build packaging/pdf_toolbox.spec
+$buildDir = Join-Path $root "build"
+$bundle = Join-Path $distRoot "PDF-X"
+$zip = Join-Path $distRoot "PDF-X-$Mode.zip"
+if (Test-Path $buildDir) {
+    Remove-Item -Recurse -Force $buildDir
+}
+if (Test-Path $bundle) {
+    Remove-Item -Recurse -Force $bundle
+}
+if (-not $SkipZip -and (Test-Path $zip)) {
+    Remove-Item -Force $zip
+}
+uv run --no-sync python -m PyInstaller --noconfirm --clean --distpath $distRoot --workpath build packaging/pdf_toolbox.spec
 if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
-
-$bundle = Join-Path $root "dist\PDF-X"
 
 # Runtime folders beside the executables
 foreach ($folder in @("plugins", "engines", "models")) {
@@ -117,9 +133,39 @@ Optional detached OCR models go here (models\rapidocr\det*.onnx, rec*.onnx).
 Without them the bundled RapidOCR models are used.
 "@ | Set-Content -Path (Join-Path $bundle "models\README.txt") -Encoding UTF8
 
+$versionSource = Get-Content "src\pdftoolbox\__init__.py" -Raw
+$versionMatch = [regex]::Match(
+    $versionSource,
+    '__version__\s*=\s*"(?<version>\d+\.\d+\.\d+)"'
+)
+if (-not $versionMatch.Success) {
+    throw "Could not read the three-part application version from __init__.py"
+}
+$buildVersion = [version]$versionMatch.Groups["version"].Value
+
+$promoPath = Join-Path $root "promo.json"
+if (-not (Test-Path $promoPath)) {
+    throw "Update manifest not found: $promoPath"
+}
+$promoManifest = Get-Content $promoPath -Raw | ConvertFrom-Json
+$manifestVersion = [version]$promoManifest.latest_version
+if ($buildVersion -gt $manifestVersion) {
+    $promoManifest.minimum_version = [string]$promoManifest.latest_version
+    $promoManifest.latest_version = $versionMatch.Groups["version"].Value
+    $json = $promoManifest | ConvertTo-Json -Depth 4
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText(
+        $promoPath,
+        $json + [Environment]::NewLine,
+        $utf8NoBom
+    )
+    Write-Host "Update manifest: $($promoManifest.latest_version), minimum $($promoManifest.minimum_version)" -ForegroundColor Cyan
+} elseif ($buildVersion -lt $manifestVersion) {
+    throw "Build version $buildVersion is older than update manifest version $manifestVersion"
+}
+Copy-Item $promoPath (Join-Path $bundle "promo.json") -Force
+
 if (-not $SkipZip) {
-    $zip = Join-Path $root "dist\PDF-X-$Mode.zip"
-    Remove-Item -Force $zip -ErrorAction SilentlyContinue
     Compress-Archive -Path $bundle -DestinationPath $zip
     Write-Host "Zip: $zip" -ForegroundColor Green
 }

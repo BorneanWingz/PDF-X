@@ -111,6 +111,81 @@ def test_merge_list_numbering_ignores_extension_case() -> None:
     assert App.numbered_names([Path("Report.PDF")]) == ["1. Report.PDF"]
 
 
+def test_office_conversion_warns_for_scanned_pdf_once(monkeypatch) -> None:
+    app = App.__new__(App)
+    app.files = [Path("scan.pdf")]
+    app.root = None
+    app._office_ocr_warning_shown = False
+    app._current_target_key = lambda: "docx"
+    warnings = []
+    monkeypatch.setattr(gui_module.pdf_text, "has_text_layer", lambda _path: False)
+    monkeypatch.setattr(
+        gui_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append(args),
+    )
+
+    app._warn_scanned_pdf_for_office()
+    app._warn_scanned_pdf_for_office()
+
+    assert len(warnings) == 1
+    assert "SEARCHABLE-PDF" in warnings[0][1]
+
+
+def test_office_conversion_does_not_warn_for_searchable_pdf(monkeypatch) -> None:
+    app = App.__new__(App)
+    app.files = [Path("searchable.pdf")]
+    app.root = None
+    app._office_ocr_warning_shown = False
+    app._current_target_key = lambda: "xlsx"
+    monkeypatch.setattr(gui_module.pdf_text, "has_text_layer", lambda _path: True)
+    monkeypatch.setattr(
+        gui_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: pytest.fail("unexpected warning"),
+    )
+
+    app._warn_scanned_pdf_for_office()
+
+    assert not app._office_ocr_warning_shown
+
+
+def test_target_list_hides_incompatible_direct_office_batch() -> None:
+    class Variable:
+        value = ""
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class Combo:
+        values = ()
+
+        def __setitem__(self, _key, value):
+            self.values = value
+
+    class Note:
+        def configure(self, **_kwargs):
+            pass
+
+    app = App.__new__(App)
+    app.files = [Path("document.odt"), Path("sheet.ods")]
+    app.target_box = Combo()
+    app.target_var = Variable()
+    app.target_note = Note()
+    app._update_option_state = lambda: None
+    app._warn_scanned_pdf_for_office = lambda: None
+
+    app._refresh_targets()
+
+    assert not any(
+        label.startswith(("DOCX", "XLSX", "PPTX"))
+        for label in app.target_box.values
+    )
+
+
 def test_page_labels_show_position_number_and_rotation() -> None:
     # position in the new document, source page number, and an explicit
     # clockwise/counter-clockwise rotation tag
@@ -175,6 +250,102 @@ def dnd_root(tk_root):
     yield tk_root
 
 
+def test_promo_banner_is_in_header_after_left_aligned_tagline(tk_root) -> None:
+    app = App.__new__(App)
+    app.root = tk_root
+    app.shell = tk.Frame(tk_root)
+    app._brand_mark = lambda _size: None
+    try:
+        app._build_header()
+        header = app.shell.winfo_children()[0]
+        tagline = next(
+            child
+            for child in header.winfo_children()
+            if child.cget("text") == "Portable PDF conversion and OCR"
+        )
+
+        assert tagline.grid_info()["column"] == 2
+        assert tagline.grid_info()["sticky"] == "w"
+        assert app.promo_label.master is header
+        assert app.promo_label.grid_info()["column"] == 3
+
+        app._show_promo(
+            {"active": True, "message": "New app coming soon", "url": "https://example.com"}
+        )
+        assert app.promo_label.cget("text") == "New app coming soon"
+    finally:
+        app.shell.destroy()
+
+
+def test_promo_shows_optional_update_banner(monkeypatch) -> None:
+    app = App.__new__(App)
+    app._promo_url = ""
+    app.promo_label = SimpleNamespace(configure=lambda **kwargs: setattr(app, "banner", kwargs["text"]))
+
+    App._show_promo(
+        app,
+        {
+            "active": False,
+            "latest_version": "0.1.9",
+            "minimum_version": "0.1.8",
+            "download_url": "https://example.com/download",
+        },
+    )
+
+    assert app._promo_url == "https://example.com/download"
+    assert app.banner == "PDF-X 0.1.9 is available - click to download"
+
+
+def test_promo_requires_obsolete_version_to_update(monkeypatch) -> None:
+    class Root:
+        destroyed = False
+
+        def after_idle(self, callback):
+            self.callback = callback
+            calls.append("close-scheduled")
+
+        def destroy(self):
+            self.destroyed = True
+            calls.append("closed")
+
+    app = App.__new__(App)
+    app.root = Root()
+    app._promo_url = ""
+    app.promo_label = SimpleNamespace(configure=lambda **_kwargs: None)
+    calls = []
+    prompts = []
+
+    def confirm_update(*args, **kwargs):
+        calls.append("prompt")
+        prompts.append(args)
+
+    def open_download(url):
+        calls.append(("open", url))
+
+    monkeypatch.setattr(gui_module.messagebox, "showinfo", confirm_update)
+    monkeypatch.setattr(gui_module.webbrowser, "open", open_download)
+
+    App._show_promo(
+        app,
+        {
+            "active": False,
+            "latest_version": "0.1.10",
+            "minimum_version": "0.1.9",
+            "download_url": "https://example.com/download",
+        },
+    )
+    assert calls == [
+        "prompt",
+        ("open", "https://example.com/download"),
+        "close-scheduled",
+    ]
+    assert "https://example.com/download" in prompts[0][1]
+    app.root.callback()
+
+    assert calls[-1] == "closed"
+    assert app.root.destroyed
+
+
 @pytest.fixture
 def scratch_app(dnd_root, tmp_path, monkeypatch):
     """A whole App that keeps its settings in a scratch file.
@@ -189,10 +360,14 @@ def scratch_app(dnd_root, tmp_path, monkeypatch):
 
     scratch = tmp_path / "config.json"
     monkeypatch.setattr(config_module, "config_path", lambda: scratch)
-    monkeypatch.setattr(
-        "pdftoolbox.gui.load_config",
-        lambda path=None: config_module.load_config(scratch),
-    )
+
+    def load_scratch_config(path=None):
+        config = config_module.load_config(scratch)
+        config["promo"] = dict(config["promo"])
+        config["promo"]["enabled"] = False
+        return config
+
+    monkeypatch.setattr("pdftoolbox.gui.load_config", load_scratch_config)
     monkeypatch.setattr(
         "pdftoolbox.gui.save_config",
         lambda config, path=None: config_module.save_config(config, scratch),

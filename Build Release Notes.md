@@ -13,7 +13,13 @@ This document lists the changelog of PDF-X.
 - Added drag-and-drop loading and an optional maximized editing window.
 - Fixed text-box editing, line deselection and saving redactions with text edits.
 - Improved text-box wrapping, Fit zoom and editing controls.
-- Documented visual editing and redaction limitations in the README.
+- Redaction masks selected pixels, rebuilds affected pages and OCRs the visible
+  remainder.
+- Added same-family Office conversions and a reminder to OCR scanned PDFs before
+  converting to Office.
+- Added an optional update banner and a required-update flow that opens the
+  download page before closing obsolete versions.
+- Documented visual editing, redaction and update limitations in the README.
 
 ### Version 0.1.7
 
@@ -82,3 +88,29 @@ The finished product is one self-contained folder:
 | `plugins` | Optional extra converters. |
 | `engines\libreoffice` | The bundled Office converter. |
 | `models\rapidocr` | Optional larger scan-reading models. |
+
+## 3. Building and publishing updates
+
+Run `scripts\build.ps1` to build the portable bundle and ZIP under `dist`. To
+build in a separate location without replacing an existing bundle that may
+still be open, pass `-OutputDirectory`, for example:
+
+```powershell
+.\scripts\build.ps1 -Mode clean -OutputDirectory dist\clean-release
+```
+
+The script clears only its PyInstaller work folder and the selected output
+bundle/ZIP; it leaves other release artifacts under `dist` untouched. It reads
+the application version from `src\pdftoolbox\__init__.py`, updates the root
+`promo.json` when that version is newer than `latest_version`, sets
+`minimum_version` to the previous latest version, and copies the manifest into
+the bundle. This keeps the immediately previous release supported; older
+versions below the minimum are obsolete.
+
+After a version bump and build, publish the updated root `promo.json` to the
+configured hosted location and publish the matching release download. At
+startup, clients fetch the manifest over HTTPS. Optional updates can be opened
+from the in-app banner. For a version below `minimum_version`, PDF-X displays
+the download URL, opens it in the default browser automatically, and then
+closes. No executable is downloaded automatically. Users can disable the
+startup check by setting `promo.enabled` to `false` in their local config.

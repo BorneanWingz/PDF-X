@@ -87,6 +87,7 @@ class App:
         self.root = root
         self.config = load_config()
         self.files: list[Path] = []
+        self._office_ocr_warning_shown = False
         self.merge_files: list[Path] = []
         self.edit_source: Path | None = None
         self.edit_pages: list[int] = []
@@ -263,7 +264,7 @@ class App:
         header = tk.Frame(self.shell, background=theme.HEADER, height=68)
         header.grid(row=0, column=0, columnspan=2, sticky="ew")
         header.grid_propagate(False)
-        header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(3, weight=1)
 
         logo = tk.Label(header, background=theme.HEADER, bd=0)
         mark = self._brand_mark(34)
@@ -286,7 +287,21 @@ class App:
             background=theme.HEADER,
             foreground=theme.HEADER_MUTED,
             font=("TkDefaultFont", 9),
-        ).grid(row=0, column=2, sticky="e", padx=18)
+        ).grid(row=0, column=2, sticky="w", padx=(18, 0))
+
+        self.promo_label = tk.Label(
+            header,
+            text="",
+            anchor="e",
+            justify="right",
+            wraplength=360,
+            fg=theme.ACCENT,
+            background=theme.HEADER,
+            cursor="hand2",
+        )
+        self.promo_label.grid(row=0, column=3, sticky="e", padx=18)
+        self.promo_label.bind("<Button-1>", self._open_promo_url)
+        self._promo_url = ""
 
     def _brand_mark(self, size: int):
         """The app icon as a header logo, or None when it cannot be loaded."""
@@ -601,7 +616,7 @@ class App:
             frame, textvariable=self.target_var, state="readonly", width=22
         )
         self.target_box.grid(row=1, column=1, sticky="w", pady=4)
-        self.target_box.bind("<<ComboboxSelected>>", lambda _e: self._update_option_state())
+        self.target_box.bind("<<ComboboxSelected>>", self._on_target_selected)
 
         # ---------- pages ----------
         ttk.Label(frame, text="Pages:", style="Card.TLabel").grid(
@@ -723,17 +738,6 @@ class App:
         )
 
     def _build_promo_area(self) -> None:
-        self.promo_label = tk.Label(
-            self.convert_tab,
-            text="",
-            anchor="w",
-            fg=theme.ACCENT,
-            background=theme.CANVAS,
-            cursor="hand2",
-        )
-        self.promo_label.pack(anchor="w", pady=(0, 4))
-        self.promo_label.bind("<Button-1>", self._open_promo_url)
-        self._promo_url = ""
         promo_conf = self.config.get("promo", {})
         if promo_conf.get("enabled", True) and promo_conf.get("url"):
             # NOTE: daemon=True so a hung network call can never keep the
@@ -2967,8 +2971,8 @@ class App:
         self._load_visual_text_page()
         count = len(self.redacted_visual_text)
         self.visual_text_status_var.set(
-            f"{count} line(s) marked. Redaction removes text objects only; "
-            "images and other content remain."
+            f"{count} line(s) marked for pixel redaction. Affected pages will be "
+            "rebuilt and OCR'd when saved."
         )
 
     def _queue_visual_text_change(self) -> None:
@@ -3275,6 +3279,11 @@ class App:
         # redaction then carries BOTH plus the page order and rotations into
         # the final file.
         if redactions:
+            try:
+                redaction_dpi = int(self.config.get("ocr_dpi", 200))
+            except (TypeError, ValueError):
+                messagebox.showerror("PDF-X", "The OCR DPI setting is invalid.")
+                return
             tag = "_redacted"
             target = self._edit_output_target(src, tag)
 
@@ -3294,16 +3303,17 @@ class App:
                         )
                         return pdf_edit.redact_lines(
                             scratch, target, redactions,
-                            order=order, rotations=rotations,
+                            order=order, rotations=rotations, dpi=redaction_dpi,
                         )
                 return pdf_edit.redact_lines(
-                    src, target, redactions, order=order, rotations=rotations
+                    src, target, redactions, order=order, rotations=rotations,
+                    dpi=redaction_dpi,
                 )
 
             def _redact_done(path: Path) -> None:
                 self.visual_text_status_var.set(
-                    f"Redacted copy saved: {path.name}. Images and other content "
-                    "remain; verify before sharing."
+                    f"Redacted copy saved: {path.name}. Redacted pages were rebuilt "
+                    "and OCR'd; verify before sharing."
                 )
 
             self._run_edit_task_custom(redact_work, _redact_done, "Redacted PDF copy saved")
@@ -3526,6 +3536,7 @@ class App:
         # NOTE: remember the folder of the most recent import so the next
         # session's file dialogs reopen where the user last worked
         if added is not None:
+            self._office_ocr_warning_shown = False
             self._remember_dir(Path(added).expanduser().resolve().parent)
         self._refresh_targets()
         self._sync_file_drop_zone()
@@ -3534,12 +3545,14 @@ class App:
         for index in sorted(self.file_list.curselection(), reverse=True):
             self.file_list.delete(index)
             del self.files[index]
+        self._office_ocr_warning_shown = False
         self._refresh_targets()
         self._sync_file_drop_zone()
 
     def clear_files(self) -> None:
         self.file_list.delete(0, "end")
         self.files.clear()
+        self._office_ocr_warning_shown = False
         self._refresh_targets()
         self._sync_file_drop_zone()
     # ---------- merge file list ----------
@@ -3767,10 +3780,13 @@ class App:
         options: list[tuple[str, str]] = []
         notes: list[str] = []
         seen: set[str] = set()
+        source_targets: list[set[str]] = []
         # NOTE: merge lives on its own tab now, so the file list here no longer
         # affects the target list - pdf_count stays 0 to keep "merge" out
         for src in self.files:
-            for option in list_targets(src, 0):
+            source_options = list_targets(src, 0)
+            source_targets.append({option.key for option in source_options})
+            for option in source_options:
                 if option.key in seen:
                     continue
                 seen.add(option.key)
@@ -3778,6 +3794,15 @@ class App:
                 options.append((option.key, label))
                 if not option.available and option.note:
                     notes.append(f"{option.label}: {option.note}")
+
+        if len(source_targets) > 1:
+            direct_targets = {"docx", "xlsx", "pptx"}
+            options = [
+                (key, label)
+                for key, label in options
+                if key not in direct_targets
+                or all(key in targets for targets in source_targets)
+            ]
 
         if not options and self.files:
             self.target_box["values"] = ["pdf"]
@@ -3791,6 +3816,39 @@ class App:
             self.target_var.set(labels[0])
         self.target_note.configure(text=" | ".join(notes[:3]))
         self._update_option_state()
+        self._warn_scanned_pdf_for_office()
+
+    def _on_target_selected(self, _event=None) -> None:
+        self._update_option_state()
+        self._warn_scanned_pdf_for_office()
+
+    def _warn_scanned_pdf_for_office(self) -> None:
+        if self._office_ocr_warning_shown:
+            return
+        if self._current_target_key() not in {"docx", "xlsx", "pptx"}:
+            return
+        scanned_pdfs = [
+            path for path in self.files
+            if path.suffix.lower() == ".pdf"
+        ]
+        for path in scanned_pdfs:
+            try:
+                searchable = pdf_text.has_text_layer(path)
+            except (ConversionError, OSError):
+                continue
+            if searchable:
+                continue
+            self._office_ocr_warning_shown = True
+            messagebox.showwarning(
+                "PDF-X",
+                "One or more imported PDFs appear to be scans without an OCR "
+                "text layer.\n\nFor better Office conversion results, first "
+                "convert the scanned PDF to SEARCHABLE-PDF, then import that "
+                "copy and choose the Office format. This lets you verify the "
+                "OCR text before converting it.",
+                parent=self.root,
+            )
+            return
 
     @staticmethod
     def _label_for(option) -> str:
@@ -4043,14 +4101,43 @@ class App:
         self.events.put(("promo", data))
 
     def _show_promo(self, data) -> None:
-        if not data or not data.get("active"):
+        if not data:
+            return
+        latest_version = str(data.get("latest_version", ""))
+        minimum_version = str(data.get("minimum_version", ""))
+        download_url = str(data.get("download_url", ""))
+        if (
+            promo.is_below_minimum(
+                __version__, minimum_version, latest_version
+            )
+            and promo.is_https_url(download_url)
+        ):
+            messagebox.showinfo(
+                "Update required",
+                f"PDF-X {__version__} is no longer supported. Version "
+                f"{latest_version} or newer is required. PDF-X will close.\n\n"
+                f"The download page will open automatically:\n{download_url}",
+                parent=self.root,
+            )
+            webbrowser.open(download_url)
+            self.root.after_idle(self.root.destroy)
+            return
+        if (
+            promo.is_newer_version(latest_version, __version__)
+            and promo.is_https_url(download_url)
+        ):
+            self._promo_url = download_url
+            self.promo_label.configure(
+                text=f"PDF-X {latest_version} is available - click to download"
+            )
+            return
+        if not data.get("active"):
             return
         message = str(data.get("message", ""))[:140]
         url = str(data.get("url", ""))
         if message and url:
             self._promo_url = url
             self.promo_label.configure(text=message)
-            self.promo_label.pack(fill="x", padx=8, pady=(0, 6))
 
     def _open_promo_url(self, _event) -> None:
         if self._promo_url:

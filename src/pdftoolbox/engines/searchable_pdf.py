@@ -104,15 +104,20 @@ def make_searchable_pdf(src: Path, out_path: Path, pages: list[OcrPage], dpi: in
     for index, ocr_page in enumerate(pages):
         base_index = ocr_page.number - 1
         if base_index < 0 or base_index >= len(base_reader.pages):
-            continue
+            raise ConversionError(
+                f"OCR result refers to missing page {ocr_page.number}"
+            )
+        if index >= len(overlay_pages):
+            raise ConversionError(f"OCR text layer missing for page {ocr_page.number}")
         writer.add_page(base_reader.pages[base_index])
         # NOTE: merge AFTER add_page - pypdf >= 5 deprecates (and warns about)
         # merging pages that are not yet attached to a writer
-        if index < len(overlay_pages):
-            try:
-                writer.pages[-1].merge_page(overlay_pages[index])
-            except Exception:  # noqa: BLE001 - keep the original page on failure
-                pass
+        try:
+            writer.pages[-1].merge_page(overlay_pages[index])
+        except Exception as exc:  # noqa: BLE001 - OCR text must not silently disappear
+            raise ConversionError(
+                f"cannot merge OCR text layer for page {ocr_page.number}: {exc}"
+            ) from exc
     writer.add_metadata({"/Producer": "PDF Toolbox (offline)"})
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

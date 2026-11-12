@@ -431,6 +431,85 @@ class TestRedact:
         texts = _page_texts(out)
         assert "SECRET" not in texts[0]
 
+    def test_redaction_burns_pixels_and_reocr_preserves_other_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+
+        from pdftoolbox.engines import ocr
+
+        source = tmp_path / "scan.pdf"
+        pdf = canvas.Canvas(str(source), pagesize=A4)
+        pdf.drawString(72, 720, "SECRET token 1234")
+        pdf.drawString(72, 680, "KEEP searchable")
+        pdf.save()
+
+        lines = pdf_edit.text_lines(source, 1)
+        secret = next(line for line in lines if "SECRET" in line.text)
+        keep = next(line for line in lines if "KEEP" in line.text)
+        scale = 200 / 72
+
+        def fake_ocr(image):
+            from pdftoolbox.engines.ocr import OcrLine
+
+            return [
+                OcrLine(
+                    "SECRET token 1234",
+                    0.99,
+                    (
+                        secret.x0 * scale,
+                        secret.top * scale,
+                        secret.x1 * scale,
+                        secret.bottom * scale,
+                    ),
+                ),
+                OcrLine(
+                    "KEEP searchable",
+                    0.99,
+                    (
+                        keep.x0 * scale,
+                        keep.top * scale,
+                        keep.x1 * scale,
+                        keep.bottom * scale,
+                    ),
+                ),
+            ], 0.01
+
+        monkeypatch.setattr(ocr, "ocr_image", fake_ocr)
+        out = pdf_edit.redact_lines(
+            source, tmp_path / "redacted.pdf", [secret], dpi=200
+        )
+
+        extracted = _page_texts(out)[0]
+        assert "SECRET" not in extracted
+        assert "KEEP searchable" in extracted
+
+        doc = pdfium.PdfDocument(str(out))
+        try:
+            image = doc[0].render(scale=1).to_pil().convert("RGB")
+            x = round((secret.x0 + secret.x1) / 2)
+            y = round((secret.top + secret.bottom) / 2)
+            assert image.getpixel((x, y)) == (0, 0, 0)
+        finally:
+            doc.close()
+
+    def test_redaction_does_not_write_output_if_ocr_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pdftoolbox.engines import ocr
+
+        source = _make_pdf(tmp_path / "book.pdf", ["SECRET"])
+        target = tmp_path / "redacted.pdf"
+
+        def fail_ocr(_image):
+            raise ConversionError("OCR failed")
+
+        monkeypatch.setattr(ocr, "ocr_image", fail_ocr)
+        with pytest.raises(ConversionError, match="OCR failed"):
+            pdf_edit.redact_lines(source, target, pdf_edit.text_lines(source, 1))
+        assert not target.exists()
+
     def test_redact_rejects_empty(self, tmp_path: Path) -> None:
         source = _make_pdf(tmp_path / "book.pdf", ["Line"])
         with pytest.raises(ConversionError, match="no lines to redact"):

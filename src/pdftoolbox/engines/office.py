@@ -21,6 +21,19 @@ _OFFICE_SUFFIXES = {
     ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
     ".odt", ".ods", ".odp", ".rtf", ".csv", ".txt",
 }
+_MODERN_FORMATS = {
+    ".doc": "docx",
+    ".docx": "docx",
+    ".odt": "docx",
+    ".rtf": "docx",
+    ".xls": "xlsx",
+    ".xlsx": "xlsx",
+    ".ods": "xlsx",
+    ".csv": "xlsx",
+    ".ppt": "pptx",
+    ".pptx": "pptx",
+    ".odp": "pptx",
+}
 _TIMEOUT_SECONDS = 300
 
 
@@ -57,7 +70,24 @@ def is_office_document(path: Path) -> bool:
     return path.suffix.lower() in _OFFICE_SUFFIXES
 
 
+def modern_office_format(path: Path) -> str | None:
+    """Modern Office output format for this document's family, if supported."""
+    return _MODERN_FORMATS.get(path.suffix.lower())
+
+
 def office_to_pdf(src: Path, out_dir: Path) -> Path:
+    return _office_convert(src, "pdf", out_dir)
+
+
+def office_to_format(src: Path, target: str, out_dir: Path) -> Path:
+    if target != modern_office_format(src):
+        raise ConversionError(
+            f"cannot convert {src.name} directly to {target.upper()}"
+        )
+    return _office_convert(src, target, out_dir)
+
+
+def _office_convert(src: Path, target: str, out_dir: Path) -> Path:
     soffice = find_soffice()
     if soffice is None:
         raise EngineUnavailable(
@@ -76,7 +106,7 @@ def office_to_pdf(src: Path, out_dir: Path) -> Path:
         "--headless",
         "--norestore",
         "--convert-to",
-        "pdf",
+        target,
         "--outdir",
         str(out_dir),
         str(src),
@@ -96,10 +126,12 @@ def office_to_pdf(src: Path, out_dir: Path) -> Path:
 
     # NOTE: check the output file FIRST - soffice can exit 0 without
     # producing a PDF (e.g. locked profile), so return code alone lies
-    expected = out_dir / f"{src.stem}.pdf"
+    expected = out_dir / f"{src.stem}.{target}"
     if expected.exists():
         return expected
     if result.returncode != 0:
         tail = (result.stderr or result.stdout or "").strip()[-400:]
         raise ConversionError(f"LibreOffice failed on {src.name}: {tail}")
-    raise ConversionError(f"LibreOffice produced no PDF for {src.name}")
+    raise ConversionError(
+        f"LibreOffice produced no {target.upper()} file for {src.name}"
+    )
