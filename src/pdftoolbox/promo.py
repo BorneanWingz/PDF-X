@@ -18,7 +18,7 @@ def fetch_promo(url: str, timeout: float = 2.0) -> dict | None:
     """Return the parsed promo dict, or None on any failure.
 
     NOTE: every failure path returns None on purpose - the banner must never
-    block startup, surface an error, or retry. See docs/PLAN.md rule 3.
+    block startup, surface an error, or retry (offline-first design rule).
     """
     if not url:
         return None

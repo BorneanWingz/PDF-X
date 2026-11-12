@@ -62,7 +62,7 @@ Copy-Item "plugins\README.md" (Join-Path $bundle "plugins\README.md") -Force
 if ($Mode -eq "internal" -and (Test-Path "plugins\pdf2docx_plugin.py")) {
     Copy-Item "plugins\pdf2docx_plugin.py" (Join-Path $bundle "plugins\pdf2docx_plugin.py") -Force
 }
-Copy-Item "docs\PLAN.md" (Join-Path $bundle "OM-README.md") -Force -ErrorAction SilentlyContinue
+Copy-Item "Build Release Notes.md" (Join-Path $bundle "Build Release Notes.md") -Force -ErrorAction SilentlyContinue
 
 # LibreOffice engine: bundled so Office -> PDF works out of the box.
 # Dictionary extensions are omitted to reduce the bundle; they are used for
