@@ -286,14 +286,14 @@ def test_promo_shows_optional_update_banner(monkeypatch) -> None:
         app,
         {
             "active": False,
-            "latest_version": "0.1.9",
-            "minimum_version": "0.1.8",
+            "latest_version": "0.1.10",
+            "minimum_version": "0.1.9",
             "download_url": "https://example.com/download",
         },
     )
 
     assert app._promo_url == "https://example.com/download"
-    assert app.banner == "PDF-X 0.1.9 is available - click to download"
+    assert app.banner == "PDF-X 0.1.10 is available - click to download"
 
 
 def test_promo_requires_obsolete_version_to_update(monkeypatch) -> None:
@@ -329,8 +329,8 @@ def test_promo_requires_obsolete_version_to_update(monkeypatch) -> None:
         app,
         {
             "active": False,
-            "latest_version": "0.1.10",
-            "minimum_version": "0.1.9",
+            "latest_version": "0.1.11",
+            "minimum_version": "0.1.10",
             "download_url": "https://example.com/download",
         },
     )

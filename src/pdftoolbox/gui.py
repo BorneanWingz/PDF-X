@@ -332,15 +332,38 @@ class App:
             )
         }
 
-        sidebar = tk.Frame(self.shell, background=theme.SIDEBAR, width=232)
+        sidebar = tk.Frame(
+            self.shell,
+            background=theme.SIDEBAR,
+            width=theme.SIDEBAR_EXPANDED_WIDTH,
+        )
         sidebar.grid(row=1, column=0, sticky="nsw", padx=(14, 0), pady=14)
         sidebar.grid_propagate(False)
-        sidebar.grid_rowconfigure(1, weight=1)
+        # NOTE: row 2 (the recent-files block) absorbs the spare height, so
+        # the navigation stays pinned to the top of the rail.
+        sidebar.grid_rowconfigure(2, weight=1)
+        sidebar.grid_columnconfigure(0, weight=1)
+        self.sidebar = sidebar
+
+        # the fold toggle: bottom-left of the rail's header area, always in the
+        # same place so the control never moves between the two states
+        self._sidebar_toggle = ttk.Button(
+            sidebar,
+            text="<<",
+            width=3,
+            style="Sidebar.TButton",
+            command=self._toggle_sidebar,
+        )
+        self._sidebar_toggle.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        # NOTE: chord-level binding so key presses inside entries and text
+        # widgets (the Edit tab's text box) are never stolen by the shortcut
+        self.root.bind("<Control-b>", lambda _e: self._toggle_sidebar())
 
         nav = tk.Frame(sidebar, background=theme.SIDEBAR)
-        nav.grid(row=0, column=0, sticky="ew")
+        nav.grid(row=1, column=0, sticky="ew")
 
         self._sidebar_rows = {}
+        self._sidebar_labels: dict[str, tk.Label] = {}
         entries = (
             ("convert", "Convert File", "convert"),
             ("merge", "Merge PDF", "merge"),
@@ -354,20 +377,76 @@ class App:
             row.pack(fill="x")
             theme.bind_click(row, lambda k=key: self._show_page(k))
             self._sidebar_rows[key] = row
+            self._sidebar_labels[key] = row.label
 
         # the recent-files block sits at the bottom of the rail
         recent = tk.Frame(sidebar, background=theme.SIDEBAR)
-        recent.grid(row=1, column=0, sticky="sew")
-        tk.Label(
+        recent.grid(row=2, column=0, sticky="sew")
+        self._recent_header = tk.Label(
             recent,
             text="RECENT FILES",
             background=theme.SIDEBAR,
             foreground=theme.MUTED,
             font=("TkDefaultFont", 8, "bold"),
-        ).pack(anchor="w", padx=16, pady=(10, 6))
+        )
+        self._recent_header.pack(anchor="w", padx=16, pady=(10, 6))
         self.recent_list = tk.Frame(recent, background=theme.SIDEBAR)
         self.recent_list.pack(fill="both", expand=True)
+        self.recent_block = recent
         self._refresh_recent_files()
+
+        # fold the rail open/closed to match the last run's saved state
+        self._apply_sidebar_state(
+            bool(self.config.get("sidebar_collapsed", False))
+        )
+
+    # ---------- collapsible sidebar ----------
+
+    #: The rail widths live in ``theme`` so the styling and the geometry share
+    #: one source of truth; these aliases keep the class-level names readable.
+    _SIDEBAR_EXPANDED_WIDTH = theme.SIDEBAR_EXPANDED_WIDTH
+    _SIDEBAR_COLLAPSED_WIDTH = theme.SIDEBAR_COLLAPSED_WIDTH
+
+    def _apply_sidebar_state(self, collapsed: bool) -> None:
+        """Draw the rail in its collapsed or expanded form.
+
+        NOTE: the grid gives column 1 (the content area) all the spare
+        width, so shrinking the rail automatically widens the pages.
+        Icons stay visible while collapsed so the menu remains usable.
+        """
+        self._sidebar_collapsed = collapsed
+        self.sidebar.configure(width=theme.sidebar_width(collapsed))
+
+        # the labels carry the wording; collapsed keeps the glyphs only
+        for label in self._sidebar_labels.values():
+            if collapsed:
+                label.pack_forget()
+            else:
+                label.pack(
+                    side="left", fill="x", expand=True, padx=(10, 12), pady=8
+                )
+        # the recent-files listing needs the text caption to make sense
+        if collapsed:
+            self._recent_header.pack_forget()
+            self.recent_block.grid_remove()
+        else:
+            self._recent_header.pack(anchor="w", padx=16, pady=(10, 6))
+            self.recent_block.grid()
+
+        # '<<' folds the rail away, '>>' brings it back
+        self._sidebar_toggle.configure(text=">>" if collapsed else "<<")
+
+    def _toggle_sidebar(self) -> None:
+        """Fold or unfold the left rail, and remember the choice."""
+        collapsed = not getattr(self, "_sidebar_collapsed", False)
+        self._apply_sidebar_state(collapsed)
+        # NOTE: the config only carries the user's choice; a read-only
+        # location must never break the fold (save_settings swallows OSErrors)
+        self.config["sidebar_collapsed"] = collapsed
+        try:
+            self._save_settings()
+        except Exception:  # noqa: BLE001 - the fold must never fail the click
+            pass
 
     def _show_page(self, key: str) -> None:
         """Swap the content area to the named page."""
@@ -989,7 +1068,7 @@ class App:
         self.edit_clear_button.pack(side="right", padx=14)
 
         self.edit_drop = theme.dashed_drop_zone(
-            self.edit_tab, height=230, on_drop=self._on_edit_drop
+            self.edit_tab, height=260, on_drop=self._on_edit_drop
         )
         content = self.edit_drop.content
         self.edit_drop_badge = theme.draw_pdf_badge(64, master=self.root)

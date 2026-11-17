@@ -48,6 +48,27 @@ GLYPH = "#3f4653"
 _IMAGES: list[tk.PhotoImage] = []
 
 
+# --------------------------------------------------------------------------
+# geometry
+# --------------------------------------------------------------------------
+
+#: The sidebar rail widths: expanded (icon + text) and collapsed
+#: (icons only, so the content area keeps the leftover space).
+SIDEBAR_EXPANDED_WIDTH = 232
+SIDEBAR_COLLAPSED_WIDTH = 60
+
+
+def sidebar_width(collapsed: bool) -> int:
+    """Pixel width of the sidebar rail in its collapsed or expanded form.
+
+    NOTE: the single source of truth for the rail geometry, so the widget
+    construction and the fold toggle can never disagree on the widths.
+    """
+    if collapsed:
+        return SIDEBAR_COLLAPSED_WIDTH
+    return SIDEBAR_EXPANDED_WIDTH
+
+
 def apply_theme(root: tk.Tk) -> None:
     """Apply the brand palette to every standard widget in the tree."""
     root.configure(background=CANVAS)

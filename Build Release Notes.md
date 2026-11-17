@@ -1,12 +1,18 @@
 # PDF-X — Build and Release Notes
 
-**Current version: 0.1.8**
+**Current version: 0.1.9**
 
 This document lists the changelog of PDF-X.
 
 ---
 
 ## 1. Release history
+
+### Version 0.1.9
+
+- Fixed the collapsible sidebar so folding and unfolding work reliably; the
+  rail widths now live in one place shared with the theme.
+- Made the Edit PDF load box the same size as the Organise PDF load box.
 
 ### Version 0.1.8
 

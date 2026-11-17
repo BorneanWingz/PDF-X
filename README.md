@@ -1,6 +1,6 @@
 # PDF-X — Offline PDF Converter and OCR Toolbox
 
-[![Latest version](https://img.shields.io/badge/version-0.1.8-crimson)](https://github.com/BorneanWingz/PDF-X/blob/main/Build%20Release%20Notes.md)
+[![Latest version](https://img.shields.io/badge/version-0.1.9-crimson)](https://github.com/BorneanWingz/PDF-X/blob/main/Build%20Release%20Notes.md)
 [![Platform](https://img.shields.io/badge/platform-Windows-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE.md)
 [![Works offline](https://img.shields.io/badge/works-offline-orange)]()
@@ -152,7 +152,13 @@ converters, optional plugins and scan-reading models.
 
 ## Updates
 
-**Current version: 0.1.8**
+**Current version: 0.1.9**
+
+### Version 0.1.9
+
+- Fixed the collapsible sidebar so folding and unfolding work reliably; the
+  rail widths now live in one place shared with the theme.
+- Made the Edit PDF load box the same size as the Organise PDF load box.
 
 ### Version 0.1.8
 
@@ -220,4 +226,4 @@ full licence and the component licensing map.
 
 ---
 
-*PDF-X · Version 0.1.8 · Author: Dr. Longwin Sii*
+*PDF-X · Version 0.1.9 · Author: Dr. Longwin Sii*

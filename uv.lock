@@ -693,7 +693,7 @@ wheels = [
 
 [[package]]
 name = "pdf-toolbox"
-version = "0.1.8"
+version = "0.1.9"
 source = { editable = "." }
 dependencies = [
     { name = "opencv-python-headless" },
