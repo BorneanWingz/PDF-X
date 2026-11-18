@@ -1,0 +1,7 @@
+== PDF Toolbox build (internal) ==
+PyInstaller 6.22.3
+Copying LibreOffice engine without 57 language dictionary packs...
+
+LibreOffice: bundled
+Bundle: D:\Git\pdf-toolbox\dist\PDF-X
+Internal build: AGPL pdf2docx plugin included (internal use).
