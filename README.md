@@ -23,7 +23,7 @@ searchable PDFs.
 - Every result is written to a new file, so the original is not overwritten.
 - Settings are saved in `config.json` beside the application.
 - The interface uses a left-hand menu, recent files, drag-and-drop file areas
-  and consistent output controls.
+  and consistent output controls. Press **Ctrl+B** to collapse or expand the menu.
 
 ## Features
 
@@ -70,7 +70,9 @@ range** keeps only the requested pages.
 
 ### Edit PDF
 
-- Import a PDF or drag and drop one onto the empty editor or page preview.
+- Import a PDF or drag and drop one onto the dashed drop box (the PDF badge in
+  the middle, the same empty state Fill Forms, Annotate PDF and Organise PDF
+  open on).
 - Use **Open a new window** beside the document name for a maximized editor;
   closing it returns the same editing session to the tab.
 - Change selectable lines of text or add a new text box anywhere on a page.
@@ -196,6 +198,11 @@ converters, optional plugins and scan-reading models.
   (text, checkbox, choice) and writes a filled copy.
 - Added the **Annotate PDF** page, which draws highlights, sticky notes and
   boxes that are stored as real annotation objects in the PDF.
+- Fill Forms, Annotate PDF and Edit PDF open on the same dashed drop box
+  with the PDF icon in the middle, so each opens with a consistent import state;
+  the field list and the annotation viewer appear once a file is open.
+- In Edit PDF the viewer now takes the spare height, so the **Edit options**
+  card sits at the bottom of the tab instead of floating mid-page.
 - Made the invisible OCR text layer align word by word instead of line by
   line, so search hits and copied text land under the exact word.
 - The workspace opens maximized and drops back to the compact 1180x800 size

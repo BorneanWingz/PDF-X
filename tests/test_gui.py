@@ -1633,6 +1633,74 @@ def test_header_has_no_window_size_button(scratch_app) -> None:
     assert "Restore size" not in texts
 
 
+def test_forms_and_annotate_open_on_the_dashed_drop_target(scratch_app) -> None:
+    # Fill Forms and Annotate PDF share the imported document, so their empty
+    # state is the same dashed target the Edit PDF page uses, PDF badge and all
+    app = scratch_app
+    app.root.update()
+    for key in ("forms", "annotate"):
+        app._show_page(key)
+        app.root.update()
+        zone = app.forms_drop if key == "forms" else app.annotate_drop
+        assert zone.winfo_ismapped(), "the empty state opens on the dashed target"
+        assert zone.badge, "the PDF badge sits in the middle"
+        texts = [
+            child.cget("text")
+            for child in zone.content.winfo_children()
+            if "text" in child.keys()
+        ]
+        assert "Drop PDF here or" in texts
+        assert "Import PDF" in texts
+
+
+def test_forms_and_annotate_swap_to_their_body_once_a_pdf_opens(
+    scratch_app, tmp_path
+) -> None:
+    app = scratch_app
+    app.root.geometry("1180x800")
+    app._reset_edit_session(_text_pdf(tmp_path), 1)
+    app.root.update()
+    for key in ("forms", "annotate"):
+        app._show_page(key)
+        app.root.update()
+        zone = app.forms_drop if key == "forms" else app.annotate_drop
+        body = app.forms_body if key == "forms" else app.annotate_body
+        assert not zone.winfo_ismapped(), "the dashed target hides once a PDF opens"
+        assert body.winfo_ismapped(), "the real page content takes its place"
+
+    app.clear_edit_pdf()
+    app.root.update()
+    for key in ("forms", "annotate"):
+        app._show_page(key)
+        app.root.update()
+        zone = app.forms_drop if key == "forms" else app.annotate_drop
+        body = app.forms_body if key == "forms" else app.annotate_body
+        assert zone.winfo_ismapped(), "Clear brings the dashed target back"
+        assert not body.winfo_ismapped()
+
+
+def test_edit_options_card_hugs_the_bottom_of_the_tab(scratch_app) -> None:
+    # Regression: the Edit options card used to share the spare height with
+    # the viewer, leaving a dead gap under the page and pushing the card up.
+    app = scratch_app
+    app.root.geometry("1180x800")
+    app._show_page("edit")
+    app.root.update()
+
+    info = app.edit_output_frame.pack_info()
+    assert not info.get("expand", False), "the options card hugs its content"
+
+    tab_bottom = app.edit_tab.winfo_y() + app.edit_tab.winfo_height()
+    card_bottom = app.edit_output_frame.winfo_y() + app.edit_output_frame.winfo_height()
+    assert abs(card_bottom - tab_bottom) <= 12, (card_bottom, tab_bottom)
+
+    # the import box is the row that absorbs the spare height
+    drop = app.edit_drop
+    assert drop.winfo_height() > app.edit_output_frame.winfo_height()
+    assert drop.winfo_y() + drop.winfo_height() <= app.edit_output_frame.winfo_y()
+
+
+
 
 def test_edit_pdf_has_no_sub_notebook(scratch_app) -> None:
     # PDF Tools moved out of Edit PDF into its own Utilities page, so the tab

@@ -17,6 +17,11 @@ This document lists the changelog of PDF-X.
   (text, checkbox, choice) and writes a filled copy.
 - Added the **Annotate PDF** page, which draws highlights, sticky notes and
   boxes that are stored as real annotation objects in the PDF.
+- Fill Forms, Annotate PDF and Edit PDF open on the same dashed drop box
+  with the PDF icon in the middle, so each opens with a consistent import state;
+  the field list and the annotation viewer appear once a file is open.
+- In Edit PDF the viewer now takes the spare height, so the **Edit options**
+  card sits at the bottom of the tab instead of floating mid-page.
 - Made the invisible OCR text layer align word by word instead of line by
   line, so search hits and copied text land under the exact word.
 - The workspace opens maximized and drops back to the compact 1180x800 size

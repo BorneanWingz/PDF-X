@@ -1155,8 +1155,14 @@ class App:
         )
         self.forms_clear_button.pack(side="right", padx=14)
 
-        body = ttk.Frame(self.forms_tab, style="Card.TFrame")
-        body.pack(fill="both", expand=True, pady=(0, 6))
+        # NOTE: the empty state is the same dashed target the Edit PDF page
+        # uses, so every page that loads a document opens the same way; the
+        # field rows appear only once a PDF is open
+        self.forms_drop = self._drop_zone_prompt(self.forms_tab, self._on_edit_drop)
+
+        self.forms_body = ttk.Frame(self.forms_tab, style="Card.TFrame")
+        self.forms_body.pack(fill="both", expand=True, pady=(0, 6))
+        body = self.forms_body
 
         # NOTE: a scrolled card, because a real form often carries dozens of
         # fields; without scrolling the Fill button would leave the screen
@@ -1237,8 +1243,14 @@ class App:
         )
         self.annotate_clear_button.pack(side="right", padx=14)
 
-        body = ttk.Frame(self.annotate_tab, style="Card.TFrame")
-        body.pack(fill="both", expand=True, pady=(0, 6))
+        # NOTE: the empty state is the same dashed target the Edit PDF page
+        # uses, so every page that loads a document opens the same way; the
+        # viewer appears only once a PDF is open
+        self.annotate_drop = self._drop_zone_prompt(self.annotate_tab, self._on_edit_drop)
+
+        self.annotate_body = ttk.Frame(self.annotate_tab, style="Card.TFrame")
+        self.annotate_body.pack(fill="both", expand=True, pady=(0, 6))
+        body = self.annotate_body
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
 
@@ -1343,6 +1355,72 @@ class App:
             action, textvariable=self.annotate_status_var, style="Card.TLabel"
         ).pack(side="right", padx=14)
 
+    def _drop_zone_prompt(
+        self,
+        parent: tk.Misc,
+        on_drop,
+        *,
+        height: int = 260,
+        badge_size: int = 64,
+        prompt: str = "Drop PDF here or",
+        hint: str = "No PDF loaded yet.",
+    ):
+        """Build the dashed "drop a PDF here" empty state, and wire its drops.
+
+        NOTE: the Convert File, Merge PDF, Organise PDF and Edit PDF pages all
+        open on this same dashed target, so it lives in one helper: the badge,
+        the prompt, the Import button and the drop binding can never drift
+        apart between pages.
+        """
+        zone = theme.dashed_drop_zone(parent, height=height, on_drop=on_drop)
+        content = zone.content
+        badge = theme.draw_pdf_badge(badge_size, master=self.root)
+        tk.Label(content, image=badge, background=theme.SURFACE).pack(pady=(8, 2))
+        tk.Label(
+            content,
+            text=prompt,
+            background=theme.SURFACE,
+            foreground=theme.INK,
+            font=("TkDefaultFont", 11),
+        ).pack()
+        ttk.Button(
+            content, text="Import PDF", command=self.open_edit_pdf,
+            style="Accent.TButton",
+        ).pack(pady=6)
+        hint_label = tk.Label(
+            content,
+            text=hint,
+            background=theme.SURFACE,
+            foreground=theme.MUTED,
+            font=("TkDefaultFont", 9),
+        )
+        hint_label.pack()
+        for widget in (zone, content, *content.winfo_children()):
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", on_drop)
+        zone.badge = badge
+        zone.hint_label = hint_label
+        return zone
+
+    def _show_page_drop_zone(self, zone, body, visible: bool) -> None:
+        """Swap a page between its dashed empty state and its real content.
+
+        NOTE: the Organise PDF, Fill Forms and Annotate PDF pages all follow
+        the same rule - the drop target while nothing is loaded, the viewer
+        once a PDF is open - so the swap logic lives in one place.
+        """
+        if zone is None or body is None or zone.master is not body.master:
+            return
+        if visible:
+            # NOTE: ``before=`` needs a packed sibling, so the body is packed
+            # first to hold the slot, then the drop target takes it over
+            body.pack(fill="both", expand=True)
+            zone.pack(fill="both", expand=True, before=body)
+            body.pack_forget()
+        else:
+            zone.pack_forget()
+            body.pack(fill="both", expand=True)
+
     def _build_edit_area(self) -> None:
         """Build the page organiser, visual text editor, and PDF tools."""
         header = theme.page_header(
@@ -1372,29 +1450,9 @@ class App:
                                             style="Card.TButton")
         self.edit_clear_button.pack(side="right", padx=14)
 
-        self.edit_drop = theme.dashed_drop_zone(
-            self.edit_tab, height=260, on_drop=self._on_edit_drop
-        )
-        content = self.edit_drop.content
-        self.edit_drop_badge = theme.draw_pdf_badge(64, master=self.root)
-        tk.Label(content, image=self.edit_drop_badge, background=theme.SURFACE).pack(
-            pady=(8, 2)
-        )
-        tk.Label(
-            content, text="Drop PDF here or", background=theme.SURFACE,
-            foreground=theme.INK, font=("TkDefaultFont", 11),
-        ).pack()
-        ttk.Button(
-            content, text="Import PDF", command=self.open_edit_pdf,
-            style="Accent.TButton",
-        ).pack(pady=6)
-        tk.Label(
-            content, text="No PDF loaded yet.", background=theme.SURFACE,
-            foreground=theme.MUTED, font=("TkDefaultFont", 9),
-        ).pack()
-        for widget in (self.edit_drop, content, *content.winfo_children()):
-            widget.drop_target_register(DND_FILES)
-            widget.dnd_bind("<<Drop>>", self._on_edit_drop)
+        # NOTE: the empty state is the shared dashed drop target, so Edit PDF
+        # opens exactly like Convert File and Organise PDF
+        self.edit_drop = self._drop_zone_prompt(self.edit_tab, self._on_edit_drop)
 
         # NOTE: the text editor gets its own frame so it can keep its grid
         # layout (a single row that takes the spare height) while the page
@@ -1402,7 +1460,17 @@ class App:
         self.visual_text_tab = tk.Frame(self.edit_tab, background=theme.CANVAS)
         self.visual_text_tab.pack(fill="both", expand=True)
         self._build_visual_text_area()
+
+        # NOTE: "Edit options" and the import card are built LAST so they sit
+        # under the viewer. The viewer expands, so it absorbs every spare
+        # pixel and the options card stays a fixed height at the bottom
+        # instead of floating in the middle of a tall window.
         self._build_edit_output_area()
+        # NOTE: the import card is inserted under the viewer, above the
+        # "Edit options" strip, so it is the row that takes the spare height
+        output = getattr(self, "edit_output_frame", None)
+        if output is not None:
+            self.edit_drop.pack(fill="both", expand=True, before=output)
 
     def _build_utilities_tab_area(self) -> None:
         """Build the standalone Utilities page using the shared edit source."""
@@ -1519,10 +1587,10 @@ class App:
     def _build_edit_output_area(self) -> None:
         frame = theme.card(self.edit_tab)
         self.edit_output_frame = frame
-        # NOTE: expand=True hands the window's spare height to the text editor,
-        # which is packed above; a plain fill="x" row would swallow it instead
-        # and the page viewer would never grow on a taller window.
-        frame.pack(fill="x", expand=True, pady=(0, 10))
+        # NOTE: the card hugs its content: the viewer above is the row that
+        # expands, so the spare height goes to the page canvas and this row
+        # stays a compact strip pinned to the bottom of the tab.
+        frame.pack(fill="x", pady=(0, 10))
         frame.columnconfigure(3, weight=1)
 
         ttk.Label(
@@ -2260,36 +2328,43 @@ class App:
             var.set(text)
 
     def _show_drop_zone(self, visible: bool) -> None:
-        """Show the drop zone when no PDF is loaded, the page list once one is.
+        """Show the dashed empty state when nothing is loaded, the real content once.
 
-        NOTE: the drop zone is the mockup's empty state, so it is only useful
-        while there is nothing to edit. Once a file is open the page list and
-        the toolbar take the space instead.
+        NOTE: the Edit PDF page swaps between the dashed drop target and the
+        visual text editor; the Organise PDF page swaps between the drop
+        target and the page list; once a document is loaded the Fill Forms
+        and Annotate PDF pages swap between the drop target and their own
+        body (field rows / annotation viewer) rather than disappearing.
         """
         edit_drop = getattr(self, "edit_drop", None)
         editor = getattr(self, "visual_text_tab", None)
         if edit_drop is not None and editor is not None:
+            # the edit drop is stacked below the viewer; the swap happens
+            # around the editor so the viewer is what gets hidden/shown
+            output = getattr(self, "edit_output_frame", None)
             if visible:
                 editor.pack_forget()
-                edit_drop.pack(fill="both", expand=True, before=self.edit_output_frame)
+                edit_drop.pack(fill="both", expand=True, before=output)
             else:
                 edit_drop.pack_forget()
                 if not getattr(self, "_editor_window_open", False):
-                    editor.pack(fill="both", expand=True, before=self.edit_output_frame)
-        zone = getattr(self, "organise_drop", None)
-        pages = getattr(self, "organise_pages", None)
-        if zone is None or pages is None:
-            return
-        if visible:
-            # the page list is packed first so it keeps the place in the
-            # packing order, then the drop zone takes its slot
-            pages.pack(fill="both", expand=True)
-            zone.pack(fill="both", expand=True, before=pages)
-            pages.pack_forget()
-            self.organise_drop_hint.configure(text="No PDF loaded yet.")
-        else:
-            zone.pack_forget()
-            pages.pack(fill="both", expand=True)
+                    editor.pack(fill="both", expand=True, before=output)
+
+        self._show_page_drop_zone(
+            getattr(self, "organise_drop", None),
+            getattr(self, "organise_pages", None),
+            visible,
+        )
+        self._show_page_drop_zone(
+            getattr(self, "forms_drop", None),
+            getattr(self, "forms_body", None),
+            visible,
+        )
+        self._show_page_drop_zone(
+            getattr(self, "annotate_drop", None),
+            getattr(self, "annotate_body", None),
+            visible,
+        )
 
     def _open_editor_window(self) -> None:
         """Move the existing editor into a larger, separate window."""
