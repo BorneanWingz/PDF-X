@@ -53,6 +53,23 @@ def output_undecided(same_folder: bool, out_dir_text: str) -> bool:
     return not same_folder and not out_dir_text.strip()
 
 
+_TCL: tk.Tcl | None = None
+
+
+def _tcl() -> tk.Tcl:
+    """A single reusable Tcl interpreter for parsing drop data.
+
+    NOTE: building a fresh interpreter per drop worked, but on this Tcl build
+    the second and later interpreters intermittently fail to locate init.tcl
+    ("Can't find a usable init.tcl"), which killed a valid drop. One cached
+    interpreter is both cheaper and immune to that.
+    """
+    global _TCL
+    if _TCL is None:
+        _TCL = tk.Tcl()
+    return _TCL
+
+
 def drop_paths(event) -> list[str]:
     """The file paths carried by a drag-and-drop event.
 
@@ -61,7 +78,7 @@ def drop_paths(event) -> list[str]:
     """
     if not event.data:
         return []
-    return list(tk.Tcl().splitlist(event.data))
+    return list(_tcl().splitlist(event.data))
 
 
 TextKey = tuple[int, float, float, float, float, str]
@@ -426,8 +443,8 @@ class App:
             ("merge", "Merge PDF", "merge"),
             ("organise", "Organise PDF", "organise"),
             ("edit", "Edit PDF", "edit"),
+            ("annotate", "Annotate PDF", "annotate"),
             ("forms", "Fill Forms", "forms"),
-            ("annotate", "Annotate", "annotate"),
             ("utilities", "Utilities", "tools"),
             ("about", "About", "about"),
         )
@@ -1112,19 +1129,22 @@ class App:
         )
         header.pack(anchor="w", pady=(0, 10))
 
+        # NOTE: the import row mirrors the Organise PDF page, so every page that
+        # shares an opened document presents it the same way
         source_row = ttk.Frame(self.forms_tab, style="Card.TFrame")
         source_row.pack(fill="x", pady=(0, 10))
+        self.forms_source_var = tk.StringVar(value="No PDF loaded")
         ttk.Button(
             source_row, text="Import PDF", command=self.open_edit_pdf,
             style="Accent.TButton",
         ).pack(side="left", padx=14, pady=10)
-        self.forms_source_var = tk.StringVar(value="No PDF loaded")
         ttk.Label(
             source_row, textvariable=self.forms_source_var, style="Card.TLabel"
         ).pack(side="left", padx=14)
-        ttk.Button(
+        self.forms_clear_button = ttk.Button(
             source_row, text="Clear", command=self.clear_edit_pdf, style="Card.TButton"
-        ).pack(side="right", padx=14)
+        )
+        self.forms_clear_button.pack(side="right", padx=14)
 
         body = ttk.Frame(self.forms_tab, style="Card.TFrame")
         body.pack(fill="both", expand=True, pady=(0, 6))
@@ -1186,7 +1206,7 @@ class App:
         """Build the Annotate page: real, selectable PDF annotations."""
         header = theme.page_header(
             self.annotate_tab,
-            "Annotate",
+            "Annotate PDF",
             "Add highlights, sticky notes and boxes that live IN the PDF file, so "
             "a reader can still select, search and remove them. Each save writes "
             "a new copy; the original is untouched.",
@@ -1195,17 +1215,18 @@ class App:
 
         source_row = ttk.Frame(self.annotate_tab, style="Card.TFrame")
         source_row.pack(fill="x", pady=(0, 10))
+        self.annotate_source_var = tk.StringVar(value="No PDF loaded")
         ttk.Button(
             source_row, text="Import PDF", command=self.open_edit_pdf,
             style="Accent.TButton",
         ).pack(side="left", padx=14, pady=10)
-        self.annotate_source_var = tk.StringVar(value="No PDF loaded")
         ttk.Label(
             source_row, textvariable=self.annotate_source_var, style="Card.TLabel"
         ).pack(side="left", padx=14)
-        ttk.Button(
+        self.annotate_clear_button = ttk.Button(
             source_row, text="Clear", command=self.clear_edit_pdf, style="Card.TButton"
-        ).pack(side="right", padx=14)
+        )
+        self.annotate_clear_button.pack(side="right", padx=14)
 
         body = ttk.Frame(self.annotate_tab, style="Card.TFrame")
         body.pack(fill="both", expand=True, pady=(0, 6))

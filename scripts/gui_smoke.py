@@ -114,7 +114,7 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
 
     # the sidebar drives the navigation, and only one page is shown at a time
     assert list(app._sidebar_rows) == [
-        "convert", "merge", "organise", "edit", "forms", "annotate",
+        "convert", "merge", "organise", "edit", "annotate", "forms",
         "utilities", "about",
     ], "sidebar entries"
     app._show_page("merge")

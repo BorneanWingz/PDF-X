@@ -1562,8 +1562,8 @@ def test_sidebar_lists_every_page_including_utilities(scratch_app) -> None:
         "Merge PDF",
         "Organise PDF",
         "Edit PDF",
+        "Annotate PDF",
         "Fill Forms",
-        "Annotate",
         "Utilities",
         "About",
     ]
@@ -1572,8 +1572,8 @@ def test_sidebar_lists_every_page_including_utilities(scratch_app) -> None:
         "merge",
         "organise",
         "edit",
-        "forms",
         "annotate",
+        "forms",
         "utilities",
         "about",
     ]
