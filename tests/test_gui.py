@@ -1534,6 +1534,31 @@ def test_convert_tab_hides_markdown_for_mixed_incompatible_inputs(
     app._add_paths([text_pdf, image_file])
     assert "MARKDOWN" not in app.target_box["values"]
 
+
+def test_convert_tab_converts_pdf_to_docx_with_libreoffice(
+    scratch_app, text_pdf, tmp_path, monkeypatch
+) -> None:
+    from pdftoolbox import convert as convert_module
+    from pdftoolbox.engines import office
+
+    soffice = office.find_soffice()
+    if soffice is None:
+        pytest.skip("LibreOffice is not installed")
+    monkeypatch.setattr(office, "find_soffice", lambda: soffice)
+    monkeypatch.setattr(office, "engines_dir", lambda: tmp_path / "engine")
+    monkeypatch.setattr(convert_module, "_plugin_targets", lambda: {})
+    app = scratch_app
+    app._add_paths([text_pdf])
+    assert "DOCX" in app.target_box["values"]
+    app.target_var.set("DOCX")
+    app.pages_var.set("2")
+    app.same_folder_var.set(False)
+    app.out_var.set(str(tmp_path / "docx"))
+    app.start_convert()
+    app.worker.join(timeout=90)
+    assert not app.worker.is_alive()
+    assert (tmp_path / "docx" / "sample_pdfx.docx").is_file()
+
 def test_annotate_page_centres_in_canvas_without_shifting_pdf_coordinates(
     scratch_app, tmp_path
 ) -> None:

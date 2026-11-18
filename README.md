@@ -60,6 +60,10 @@ PDF-to-Markdown exports extracted text under page headings, retaining line
 breaks. Image-only PDFs are read with offline OCR first. Images, tables and original text
 formatting are not reconstructed.
 
+PDF-to-DOCX uses the bundled LibreOffice Writer PDF importer. Selected pages
+are supported, and image-only PDFs are OCR'd first. Check the result: complex
+layouts, images and OCR text may not be reproduced accurately.
+
 ### Merge PDF
 
 Convert supported files to PDF and join them in the order shown. Files are
@@ -174,8 +178,9 @@ The About screen shows the version and author information. The author is
 | TXT, MD | PDF |
 | DOC, DOCX, XLS, XLSX, PPT, PPTX, ODT, ODS, ODP, RTF, CSV | PDF using the bundled LibreOffice converter |
 
-The optional PDF-to-Word converter is kept in `plugins/`. It may be omitted from
-clean builds.
+An alternative AGPL-licensed pdf2docx plugin is packaged separately from clean
+builds. It requires its own dependencies and is not enabled by copying its file
+into the clean executable; see the plugin package's README.
 
 ## Installation and use
 
@@ -256,7 +261,7 @@ PDF-X uses the following open-source projects and components:
 - Pillow for image handling and image-to-PDF conversion.
 - ReportLab for PDF creation and searchable PDF writing.
 - RapidOCR for offline scan reading.
-- LibreOffice for bundled Office-to-PDF conversion.
+- LibreOffice for bundled Office-to-PDF and PDF-to-DOCX conversion.
 
 ## Preview
 

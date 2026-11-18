@@ -10,6 +10,10 @@ This document lists the changelog of PDF-X.
 
 ### Version 0.1.9
 
+- Added PDF-to-DOCX conversion through LibreOffice, with page selection and
+  offline OCR for image-only inputs. The optional pdf2docx plugin is packaged
+  separately from clean builds.
+- Added PDF-to-Markdown text export and scrolling in the annotation viewer.
 - Fixed the collapsible sidebar so folding and unfolding work reliably; the
   rail widths now live in one place shared with the theme.
 - Made the Edit PDF load box the same size as the Organise PDF load box.
@@ -125,6 +129,10 @@ the application version from `src\pdftoolbox\__init__.py`, updates the root
 `minimum_version` to the previous latest version, and copies the manifest into
 the bundle. This keeps the immediately previous release supported; older
 versions below the minimum are obsolete.
+
+The optional pdf2docx plugin source and its README are also copied into
+`PDF-X-optional-pdf2docx` beside the application bundle, not into the clean
+bundle or its ZIP.
 
 After a version bump and build, publish the updated root `promo.json` to the
 configured hosted location and publish the matching release download. At

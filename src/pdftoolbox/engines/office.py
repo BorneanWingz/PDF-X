@@ -11,10 +11,13 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 from ..paths import engines_dir
 from . import ConversionError, EngineUnavailable
+from . import pdf_edit
 
 _SOFFICE_NAMES = ("soffice.exe", "soffice")
 _OFFICE_SUFFIXES = {
@@ -87,7 +90,33 @@ def office_to_format(src: Path, target: str, out_dir: Path) -> Path:
     return _office_convert(src, target, out_dir)
 
 
-def _office_convert(src: Path, target: str, out_dir: Path) -> Path:
+def pdf_to_docx(src: Path, out_path: Path, pages: list[int] | None = None) -> Path:
+    with tempfile.TemporaryDirectory(prefix="pdftoolbox-docx-") as scratch:
+        work = Path(scratch)
+        input_pdf = src
+        if pages:
+            count = pdf_edit.page_count(src)
+            for page in pages:
+                if page < 1 or page > count:
+                    raise ConversionError(f"page {page} out of range (1-{count})")
+            input_pdf = pdf_edit.extract_pages(src, work / "selected.pdf", pages)
+        result = _office_convert(
+            input_pdf, "docx", work, input_filter="writer_pdf_import"
+        )
+        try:
+            with zipfile.ZipFile(result) as document:
+                if "word/document.xml" not in document.namelist() or document.testzip():
+                    raise ConversionError("LibreOffice produced an invalid DOCX file")
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ConversionError("LibreOffice produced an invalid DOCX file") from exc
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(result), str(out_path))
+    return out_path
+
+
+def _office_convert(
+    src: Path, target: str, out_dir: Path, *, input_filter: str | None = None
+) -> Path:
     soffice = find_soffice()
     if soffice is None:
         raise EngineUnavailable(
@@ -105,12 +134,10 @@ def _office_convert(src: Path, target: str, out_dir: Path) -> Path:
         f"-env:UserInstallation={profile.resolve().as_uri()}",
         "--headless",
         "--norestore",
-        "--convert-to",
-        target,
-        "--outdir",
-        str(out_dir),
-        str(src),
     ]
+    if input_filter:
+        cmd.append(f"--infilter={input_filter}")
+    cmd.extend(["--convert-to", target, "--outdir", str(out_dir), str(src)])
     try:
         result = subprocess.run(
             cmd,

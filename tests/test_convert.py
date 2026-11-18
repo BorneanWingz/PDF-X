@@ -17,6 +17,30 @@ from pdftoolbox.engines import ConversionError
 from pdftoolbox.engines import office
 
 
+@pytest.fixture
+def libreoffice_pdf(monkeypatch, tmp_path):
+    from pdftoolbox import convert as convert_module
+
+    soffice = office.find_soffice()
+    if soffice is None:
+        pytest.skip("LibreOffice is not installed")
+    monkeypatch.setattr(office, "find_soffice", lambda: soffice)
+    monkeypatch.setattr(office, "engines_dir", lambda: tmp_path / "engine")
+    monkeypatch.setattr(convert_module, "_plugin_targets", lambda: {})
+
+
+def _docx_text(path: Path) -> str:
+    import zipfile
+    from xml.etree import ElementTree
+
+    with zipfile.ZipFile(path) as archive:
+        root = ElementTree.fromstring(archive.read("word/document.xml"))
+    return " ".join(
+        node.text or ""
+        for node in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+    )
+
+
 def _assert_pdf(path: Path) -> None:
     doc = pdfium.PdfDocument(str(path))
     try:
@@ -149,6 +173,74 @@ class TestTextAndHtml:
         content = output.read_text(encoding="utf-8")
         assert r"\# Heading \*not bold\*" in content
         assert "&lt;tag&gt;" in content
+
+
+def test_libreoffice_pdf_to_docx_selected_page(
+    libreoffice_pdf, text_pdf: Path, tmp_path: Path
+) -> None:
+    option = next(option for option in list_targets(text_pdf) if option.key == "docx")
+    assert option.available
+    output = convert(text_pdf, "docx", out_dir=tmp_path / "out", pages=[2])[0]
+    assert output.name == "sample_pdfx.docx"
+    text = _docx_text(output)
+    assert "Page two content" in text
+    assert "Hello PDF Toolbox" not in text
+    with pytest.raises(ConversionError, match="out of range"):
+        convert(text_pdf, "docx", out_dir=tmp_path / "out", pages=[3])
+
+
+def test_libreoffice_pdf_to_docx_scanned_page(
+    libreoffice_pdf, scanned_pdf: Path, tmp_path: Path
+) -> None:
+    output = convert(scanned_pdf, "docx", out_dir=tmp_path / "out", ocr_dpi=200)[0]
+    assert "HELLO" in _docx_text(output).upper()
+
+
+def test_invalid_libreoffice_docx_does_not_replace_existing_output(
+    text_pdf: Path, tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "existing.docx"
+    output.write_bytes(b"existing")
+
+    def broken_output(_src, _target, out_dir, **_kwargs):
+        result = out_dir / "broken.docx"
+        result.write_bytes(b"not a docx")
+        return result
+
+    monkeypatch.setattr(office, "_office_convert", broken_output)
+    with pytest.raises(ConversionError, match="invalid DOCX"):
+        office.pdf_to_docx(text_pdf, output)
+    assert output.read_bytes() == b"existing"
+
+
+def test_pdf_docx_uses_available_plugin_or_libreoffice(
+    text_pdf: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from pdftoolbox import convert as convert_module
+    from pdftoolbox.plugins import PluginInfo
+
+    def plugin_convert(src, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "plugin.docx"
+        path.write_text("plugin")
+        return path
+
+    plugin = PluginInfo("alternate", ["docx"], convert=plugin_convert, available=True)
+    monkeypatch.setattr(convert_module, "_plugin_targets", lambda: {"docx": plugin})
+    monkeypatch.setattr(office, "is_available", lambda: False)
+    assert next(item for item in list_targets(text_pdf) if item.key == "docx").available
+    assert convert(text_pdf, "docx", out_dir=tmp_path / "plugin")[0].read_text() == "plugin"
+
+    plugin.available = False
+    monkeypatch.setattr(office, "is_available", lambda: True)
+    monkeypatch.setattr(
+        office, "pdf_to_docx",
+        lambda _src, out_path, _pages: out_path,
+    )
+    assert next(item for item in list_targets(text_pdf) if item.key == "docx").available
+    assert convert(text_pdf, "docx", out_dir=tmp_path / "fallback") == [
+        tmp_path / "fallback" / "sample_pdfx.docx"
+    ]
 
 
 class TestTables:

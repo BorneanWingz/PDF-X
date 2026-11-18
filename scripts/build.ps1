@@ -78,6 +78,10 @@ Copy-Item "plugins\README.md" (Join-Path $bundle "plugins\README.md") -Force
 if ($Mode -eq "internal" -and (Test-Path "plugins\pdf2docx_plugin.py")) {
     Copy-Item "plugins\pdf2docx_plugin.py" (Join-Path $bundle "plugins\pdf2docx_plugin.py") -Force
 }
+$pluginBundle = Join-Path $distRoot "PDF-X-optional-pdf2docx"
+New-Item -ItemType Directory -Force -Path $pluginBundle | Out-Null
+Copy-Item "plugins\pdf2docx_plugin.py" (Join-Path $pluginBundle "pdf2docx_plugin.py") -Force
+Copy-Item "plugins\pdf2docx_README.txt" (Join-Path $pluginBundle "README.txt") -Force
 Copy-Item "Build Release Notes.md" (Join-Path $bundle "Build Release Notes.md") -Force -ErrorAction SilentlyContinue
 
 # LibreOffice engine: bundled so Office -> PDF works out of the box.

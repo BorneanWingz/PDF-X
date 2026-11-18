@@ -54,16 +54,17 @@ SOFTWARE.
 | Text / Markdown to PDF | ReportLab | BSD |
 | OCR (offline) | RapidOCR ONNX models | Apache-2.0 |
 | Searchable PDF writer | ReportLab + pypdf | BSD |
-| Office to PDF | LibreOffice (bundled in engines) | MPL-2.0 |
-| PDF to DOCX (optional) | pdf2docx (PyMuPDF) in plugins/ | AGPL-3.0 |
+| Office to PDF / PDF to DOCX | LibreOffice (bundled in engines) | MPL-2.0 |
+| PDF to DOCX (optional alternative) | pdf2docx (PyMuPDF) in plugins/ | AGPL-3.0 |
 
 ### A note on the bundled parts
 
 - The **core** of PDF-X is built only from permissive components (the ones with
   Apache, BSD, MIT and MIT-CMU licences above). These are safe to share freely.
-- The **optional PDF-to-Word feature** uses PyMuPDF via pdf2docx, which carries
-  the AGPL-3.0 licence. It lives in a separate `plugins/` folder and is left out
-  of the *clean* build, so wider distribution stays unencumbered.
+- The **optional pdf2docx alternative** uses PyMuPDF, which carries the
+  AGPL-3.0 licence. Its source is packaged separately and its dependencies are
+  excluded from the clean application bundle. Review the applicable licences
+  before using or redistributing it.
 - The **bundled LibreOffice** converter is distributed under its own open-source
   licences. When you repackage a release, keep its supplied licence and notice
   files intact and make the matching source available to the people who receive

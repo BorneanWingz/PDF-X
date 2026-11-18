@@ -3,6 +3,12 @@
 Drop optional converter plugins here next to `PDFToolbox.exe` (or beside the
 repository root during development). The app scans this folder at startup.
 
+PDF-to-DOCX is built in via LibreOffice. The separately packaged
+`pdf2docx_plugin.py` is an alternative AGPL-licensed converter: when available,
+it takes precedence. The clean frozen build excludes its dependencies, so
+copying the plugin file alone cannot enable it. See `pdf2docx_README.txt` in
+the separate plugin package for source and internal-build requirements.
+
 ## Contract
 
 A plugin is a single `.py` file with:

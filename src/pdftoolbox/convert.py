@@ -219,7 +219,7 @@ def list_targets(src: Path, pdf_inputs: int = 0) -> list[TargetOption]:
             TargetOption(key, "MARKDOWN" if key == "md" else key.upper(), True)
             for key in ["png", "jpg", "tif", "txt", "html", "md", "xlsx", "pptx", "searchable-pdf"]
         )
-        if "docx" in plugin_map:
+        if "docx" in plugin_map and plugin_map["docx"].available:
             info = plugin_map["docx"]
             note = "AGPL plugin."
             if info.hint:
@@ -228,12 +228,13 @@ def list_targets(src: Path, pdf_inputs: int = 0) -> list[TargetOption]:
                 TargetOption("docx", "DOCX", info.available, note.strip())
             )
         else:
+            available = office.is_available()
             options.append(
                 TargetOption(
                     "docx",
                     "DOCX",
-                    False,
-                    "plugin not installed (see plugins/README.md)",
+                    available,
+                    "" if available else "LibreOffice engine not installed",
                 )
             )
         return options
@@ -450,10 +451,13 @@ def _dispatch_from_pdf(
         out_path = output_path(name_src, tag_dir, ".pdf", "_searchable")
         return [searchable_pdf.make_searchable_pdf(src, out_path, ocr_pages, ocr_dpi)]
 
+    plugin_info = _plugin_targets().get(key)
+    if key == "docx" and (plugin_info is None or not plugin_info.available):
+        return [office.pdf_to_docx(src, output_path(name_src, tag_dir, ".docx"), pages)]
+
     # any target provided by an optional plugin (e.g. docx via pdf2docx).
     # NOTE: unavailable plugins raise EngineUnavailable so callers can explain
     # which component is missing instead of failing silently.
-    plugin_info = _plugin_targets().get(key)
     if plugin_info is not None:
         if not plugin_info.available or plugin_info.convert is None:
             detail = plugin_info.load_error or plugin_info.hint or "dependencies missing"
