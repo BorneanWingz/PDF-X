@@ -114,7 +114,8 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
 
     # the sidebar drives the navigation, and only one page is shown at a time
     assert list(app._sidebar_rows) == [
-        "convert", "merge", "organise", "edit", "utilities", "about"
+        "convert", "merge", "organise", "edit", "forms", "annotate",
+        "utilities", "about",
     ], "sidebar entries"
     app._show_page("merge")
     root.update_idletasks()
@@ -298,7 +299,8 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
 
     # ---------- page names and the folded Advanced Options block ----------
     assert sorted(app._pages) == [
-        "about", "convert", "edit", "merge", "organise", "utilities"
+        "about", "annotate", "convert", "edit", "forms", "merge",
+        "organise", "utilities",
     ]
     app._show_page("convert")
     root.update_idletasks()
@@ -409,6 +411,71 @@ def _check(root: tk.Tk, app: App, scratch: Path, warnings: list[str]) -> None:
     finally:
         gui_module.messagebox.askyesnocancel = real_ask
         gui_module.filedialog.askdirectory = real_askdirectory
+
+    # ---------- fill forms page ----------
+    import time
+
+    form_pdf = scratch / "form.pdf"
+    form_canvas = _reportlab_canvas(form_pdf)
+    form_canvas.drawString(72, 720, "Application form")
+    form_canvas.acroForm.textfield(
+        name="fullname", tooltip="Full name", x=72, y=700, width=200, height=20
+    )
+    form_canvas.acroForm.checkbox(name="agree", tooltip="I agree", x=72, y=650, size=20)
+    form_canvas.showPage()
+    form_canvas.save()
+
+    app._show_page("forms")
+    app._on_edit_drop(SimpleNamespace(data="{" + str(form_pdf) + "}"))
+    root.update_idletasks()
+    assert "fullname" in app.forms_entries, "text field listed"
+    assert "agree" in app.forms_checkboxes, "checkbox listed"
+    app.forms_entries["fullname"].insert(0, "Smoke Test")
+    app.forms_checkboxes["agree"].set(True)
+    app.run_fill_forms()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        root.update_idletasks()
+        if not (app.worker and app.worker.is_alive()):
+            break
+        time.sleep(0.02)
+    filled = form_pdf.with_name("form_filled.pdf")
+    assert filled.is_file(), "filled copy written"
+    from pdftoolbox.engines import pdf_forms as forms_engine
+
+    values = forms_engine.field_values(filled)
+    assert values["fullname"] == "Smoke Test", "text filled"
+    assert values["agree"] is True, "checkbox ticked"
+
+    # ---------- annotate page ----------
+    app._show_page("annotate")
+    app._on_edit_drop(SimpleNamespace(data="{" + str(text_pdf) + "}"))
+    root.update_idletasks()
+    assert app.annotate_total_pages == 1, "page count known"
+    assert app.annotate_image is not None, "page rendered for the canvas"
+    app.annotate_kind_var.set("highlight")
+    app._add_annotate_rect((50, 50, 250, 80))
+    assert len(app.annotate_items) == 1, "highlight queued"
+    app.run_annotate()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        root.update_idletasks()
+        if not (app.worker and app.worker.is_alive()):
+            break
+        time.sleep(0.02)
+    annotated = text_pdf.with_name("digital_annotated.pdf")
+    assert annotated.is_file(), "annotated copy written"
+    from pdftoolbox.engines import pdf_annotations as annot_engine
+
+    assert annot_engine.count_annotations(annotated) == 1, "annotation stored"
+
+    # ---------- window size ----------
+    app._restore_window()
+    root.update_idletasks()
+    assert root.geometry().startswith("1180x800"), "compact size restored"
+    app._maximise_window()
+    root.update_idletasks()
+    assert app._window_maximised, "workspace maximised again"
 
     root.update_idletasks()
 

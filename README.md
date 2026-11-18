@@ -95,6 +95,37 @@ visual editor works with upright pages and edits text line by line rather than
 rearranging whole paragraphs. Undo and Redo apply to text edits and boxes, not
 page changes made on Organise PDF.
 
+### Fill Forms
+
+Fill the interactive fields of a PDF form and save a filled copy. Import a PDF
+with **Import PDF** or drag and drop; the page lists every field the document
+declares, with its page number. Text fields become entry boxes, checkboxes
+become tick boxes, and choice fields become drop-downs.
+
+- Fill only the fields you want; unlisted fields keep the value they had.
+- **Fill & Save** writes a copy with the `_filled` suffix beside the original.
+- The original file is never changed, and a form with no fillable fields says
+  so instead of failing.
+
+Fill Forms, Edit PDF, Organise PDF, Annotate and Utilities share the same
+opened document, so importing once is enough.
+
+### Annotate
+
+Add highlights, sticky notes and boxes that live IN the PDF file as real
+annotation objects, so a reader can still select, search and remove them.
+
+- Import a PDF, then drag a box on the rendered page.
+- Choose the annotation **Type** (highlight, note or rectangle), a highlight
+  **Colour**, and the note **Text** for a sticky note.
+- **Add** queues the annotation for the current page; use **◀** and **▶** to
+  move between pages and queue more.
+- **Clear page** drops only the annotations queued for the visible page.
+- **Save annotated copy** writes a new PDF with the `_annotated` suffix.
+
+Annotation boxes are stored in PDF points, so they stay where you put them at
+any zoom level. A sticky note needs text before it can be queued.
+
 ### Utilities
 
 Add watermarks or page numbers, find and replace words, and compress PDFs.
@@ -129,6 +160,8 @@ The About screen shows the version and author information. The author is
 | Presentation formats | PPTX |
 | Any supported files | One merged PDF |
 | PDF in Organise or Edit | Reordered, rotated, deleted, split, extracted, watermarked, numbered or edited PDF |
+| PDF form | Filled copy with its text, checkbox and choice fields set |
+| PDF | PDF carrying highlight, sticky note and box annotations |
 | PNG, JPG, TIF, BMP, WebP | PDF |
 | TXT, MD | PDF |
 | DOC, DOCX, XLS, XLSX, PPT, PPTX, ODT, ODS, ODP, RTF, CSV | PDF using the bundled LibreOffice converter |
@@ -159,6 +192,14 @@ converters, optional plugins and scan-reading models.
 - Fixed the collapsible sidebar so folding and unfolding work reliably; the
   rail widths now live in one place shared with the theme.
 - Made the Edit PDF load box the same size as the Organise PDF load box.
+- Added the **Fill Forms** page, which lists a PDF's interactive fields
+  (text, checkbox, choice) and writes a filled copy.
+- Added the **Annotate** page, which draws highlights, sticky notes and boxes
+  that are stored as real annotation objects in the PDF.
+- Made the invisible OCR text layer align word by word instead of line by
+  line, so search hits and copied text land under the exact word.
+- The workspace now opens maximized and can drop back to the compact 1180x800
+  size from the header button or Alt+F9.
 
 ### Version 0.1.8
 
@@ -172,17 +213,6 @@ converters, optional plugins and scan-reading models.
 - Added an optional update banner and a required-update flow that opens the
   download page before closing obsolete versions.
 - Documented visual editing, redaction and update limitations.
-
-### Version 0.1.7
-
-- Utilities became its own screen for watermarks, page numbers, find-and-replace
-  and compression.
-- Edit PDF became a direct editor with compact previous and next page buttons.
-- The page preview stays centred when the window is resized.
-- Processing Log controls were removed from the screens to leave more room for
-  the work area.
-- About now links to the README and identifies the author.
-- Windows program information is filled in during packaging.
 
 ## How it works
 

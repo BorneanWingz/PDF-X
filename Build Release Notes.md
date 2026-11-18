@@ -13,6 +13,14 @@ This document lists the changelog of PDF-X.
 - Fixed the collapsible sidebar so folding and unfolding work reliably; the
   rail widths now live in one place shared with the theme.
 - Made the Edit PDF load box the same size as the Organise PDF load box.
+- Added the **Fill Forms** page, which lists a PDF's interactive fields
+  (text, checkbox, choice) and writes a filled copy.
+- Added the **Annotate** page, which draws highlights, sticky notes and boxes
+  that are stored as real annotation objects in the PDF.
+- Made the invisible OCR text layer align word by word instead of line by
+  line, so search hits and copied text land under the exact word.
+- The workspace now opens maximized and can drop back to the compact 1180x800
+  size from the header button or Alt+F9.
 
 ### Version 0.1.8
 

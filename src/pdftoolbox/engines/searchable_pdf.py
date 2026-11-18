@@ -37,6 +37,41 @@ def _register_font() -> None:
                 continue
 
 
+def _word_placements(
+    text: str, box_w: float, font_size: float
+) -> list[tuple[str, float, float]]:
+    """Split a line into words with x offsets that match their glyphs.
+
+    NOTE: this is the word-level alignment improvement. A whole line drawn as
+    one invisible run makes a viewer's search hit highlight the entire line;
+    drawing each word at its own x makes the hit land under the actual word,
+    which is what copy-and-paste and "find" expect.
+
+    The words are laid out at their measured widths. When the measured run is
+    narrower than the detected box, the slack is distributed between the words
+    so the last word still lands near the box's right edge (where the scan
+    really put it). When it is wider, the natural spacing is kept and the words
+    run slightly past the edge rather than overlapping each other.
+    """
+    words = text.split()
+    if len(words) < 2:
+        # a single word (or CJK text with no spaces) gains nothing from a split
+        return []
+    widths = [pdfmetrics.stringWidth(word, _FONT_NAME, font_size) for word in words]
+    natural = sum(widths)
+    if natural <= 0:
+        return []
+    slack = box_w - natural
+    gaps = len(words) - 1
+    gap = (slack / gaps) if gaps and slack > 0 else 0.0
+    placements: list[tuple[str, float, float]] = []
+    x = 0.0
+    for word, width in zip(words, widths):
+        placements.append((word, x, width))
+        x += width + gap
+    return placements
+
+
 def _build_overlay(pages: list[OcrPage], dpi: int) -> bytes:
     """One invisible-text page per OCR page, sized like the rendered page."""
     _register_font()
@@ -73,13 +108,24 @@ def _build_overlay(pages: list[OcrPage], dpi: int) -> bytes:
             pdf.setFont(_FONT_NAME, font_size)
             # NOTE: baseline y - OCR boxes measure from the page top while PDF
             # coordinates grow upward, so the baseline is height - box bottom
-            text_object = pdf.beginText(x0 * scale, height_pt - (y1 * scale))
-            text_object.setFont(_FONT_NAME, font_size)
-            text_object.setTextRenderMode(3)  # invisible text layer
-            # NOTE: render mode must be set on the text object - ReportLab 5
-            # removed Canvas.setTextRenderMode, and the canvas call crashes
-            text_object.textOut(text)
-            pdf.drawText(text_object)
+            baseline = height_pt - (y1 * scale)
+            placements = _word_placements(text, box_w, font_size)
+            if placements:
+                for word, x_offset, _width in placements:
+                    text_object = pdf.beginText(x0 * scale + x_offset, baseline)
+                    text_object.setFont(_FONT_NAME, font_size)
+                    text_object.setTextRenderMode(3)  # invisible text layer
+                    # NOTE: render mode must be set on the text object -
+                    # ReportLab 5 removed Canvas.setTextRenderMode, and the
+                    # canvas call crashes
+                    text_object.textOut(word)
+                    pdf.drawText(text_object)
+            else:
+                text_object = pdf.beginText(x0 * scale, baseline)
+                text_object.setFont(_FONT_NAME, font_size)
+                text_object.setTextRenderMode(3)
+                text_object.textOut(text)
+                pdf.drawText(text_object)
 
         pdf.showPage()
     pdf.save()

@@ -30,7 +30,7 @@ from .convert import (
     OCR_FIRST_TARGETS,
 )
 from .engines import ConversionError, EngineUnavailable
-from .engines import pdf_edit, pdf_text
+from .engines import pdf_annotations, pdf_edit, pdf_forms, pdf_render, pdf_text
 from .paths import icon_path
 from .system_fonts import FontFace, installed_fonts, suggest_font
 from . import theme
@@ -138,8 +138,13 @@ class App:
         # button were pushed completely off the bottom of the tab.
         # minsize keeps 680 px, the smallest height whose tab (654 px) still
         # clears that content, so resizing cannot bring the clipping back.
-        root.geometry("1180x800")
+        self._restore_geometry = "1180x800"
+        root.geometry(self._restore_geometry)
         root.minsize(980, 680)
+        # NOTE: the workspace opens maximized because the editor and the page
+        # lists all benefit from height; Alt+F9 / the header button put the
+        # window back to the compact 1180x800 size (see _toggle_maximised).
+        root.bind("<Alt-F9>", lambda _event: self._toggle_maximised())
         self._apply_window_icon(root)
         self._configure_styles(root)
 
@@ -162,6 +167,8 @@ class App:
         self.merge_tab = ttk.Frame(self.content)
         self.edit_tab = ttk.Frame(self.content)
         self.organise_tab = ttk.Frame(self.content)
+        self.forms_tab = ttk.Frame(self.content)
+        self.annotate_tab = ttk.Frame(self.content)
         self.utilities_tab = ttk.Frame(self.content)
         self.about_tab = ttk.Frame(self.content)
         self._pages = {
@@ -169,6 +176,8 @@ class App:
             "merge": self.merge_tab,
             "organise": self.organise_tab,
             "edit": self.edit_tab,
+            "forms": self.forms_tab,
+            "annotate": self.annotate_tab,
             "utilities": self.utilities_tab,
             "about": self.about_tab,
         }
@@ -180,6 +189,8 @@ class App:
         self._build_merge_area()
         self._build_organise_tab_area()
         self._build_edit_area()
+        self._build_forms_tab_area()
+        self._build_annotate_tab_area()
         self._build_utilities_tab_area()
         self._build_about_area()
 
@@ -189,9 +200,45 @@ class App:
         # NOTE: the Edit PDF tab opens on its empty state, so the drop zone is
         # showing until a PDF is imported
         self._show_drop_zone(True)
+        # NOTE: open the workspace maximized; the smaller geometry stays as the
+        # restore size so the compact window is one click away
+        self.root.after_idle(self._maximise_window)
         # NOTE: the queue + after() poll is the ONLY bridge from worker
         # threads back to Tk - Tk widgets must never be touched off-thread
         self._poll_events()
+
+    # ---------- window size ----------
+
+    def _maximise_window(self) -> None:
+        """Fill the screen, remembering the compact size to restore to."""
+        try:
+            self.root.state("zoomed")
+            self._window_maximised = True
+        except tk.TclError:
+            # NOTE: "zoomed" is Windows/macOS; X11 has no equivalent state, so
+            # the window simply keeps the compact geometry there
+            self._window_maximised = False
+
+    def _restore_window(self) -> None:
+        """Return to the compact 1180x800 workspace."""
+        try:
+            self.root.state("normal")
+        except tk.TclError:
+            pass
+        self.root.geometry(getattr(self, "_restore_geometry", "1180x800"))
+        self._window_maximised = False
+
+    def _toggle_maximised(self) -> None:
+        """Switch between the maximised workspace and the compact window."""
+        if getattr(self, "_window_maximised", False):
+            self._restore_window()
+        else:
+            self._maximise_window()
+        button = getattr(self, "window_size_button", None)
+        if button is not None:
+            button.configure(
+                text="Restore size" if getattr(self, "_window_maximised", False) else "Maximise"
+            )
 
     # ---------- settings ----------
 
@@ -303,6 +350,16 @@ class App:
         self.promo_label.bind("<Button-1>", self._open_promo_url)
         self._promo_url = ""
 
+        # NOTE: the workspace opens maximized, so this button is the one-click
+        # way back to the compact 1180x800 window (and back again)
+        self.window_size_button = ttk.Button(
+            header,
+            text="Maximise",
+            width=10,
+            command=self._toggle_maximised,
+        )
+        self.window_size_button.grid(row=0, column=4, sticky="e", padx=(0, 18))
+
     def _brand_mark(self, size: int):
         """The app icon as a header logo, or None when it cannot be loaded."""
         icon = icon_path()
@@ -369,6 +426,8 @@ class App:
             ("merge", "Merge PDF", "merge"),
             ("organise", "Organise PDF", "organise"),
             ("edit", "Edit PDF", "edit"),
+            ("forms", "Fill Forms", "forms"),
+            ("annotate", "Annotate", "annotate"),
             ("utilities", "Utilities", "tools"),
             ("about", "About", "about"),
         )
@@ -458,6 +517,10 @@ class App:
         for name, row in self._sidebar_rows.items():
             theme.set_sidebar_active(row, name == key)
         self.current_page = key
+        # NOTE: the annotate page renders its page on demand, because the
+        # preview is only worth the cost once the user actually opens it
+        if key == "annotate" and self.edit_source is not None and self.annotate_total_pages:
+            self._load_annotate_page()
 
     # ---------- recent files ----------
 
@@ -1037,6 +1100,218 @@ class App:
         ).pack(side="right", padx=14)
 
 
+
+    def _build_forms_tab_area(self) -> None:
+        """Build the Fill Forms page: list a PDF's AcroForm fields to fill in."""
+        header = theme.page_header(
+            self.forms_tab,
+            "Fill Forms",
+            "Fill the interactive fields of a PDF form and save a filled copy. "
+            "Only fields the document declares are shown; the original is never "
+            "overwritten.",
+        )
+        header.pack(anchor="w", pady=(0, 10))
+
+        source_row = ttk.Frame(self.forms_tab, style="Card.TFrame")
+        source_row.pack(fill="x", pady=(0, 10))
+        ttk.Button(
+            source_row, text="Import PDF", command=self.open_edit_pdf,
+            style="Accent.TButton",
+        ).pack(side="left", padx=14, pady=10)
+        self.forms_source_var = tk.StringVar(value="No PDF loaded")
+        ttk.Label(
+            source_row, textvariable=self.forms_source_var, style="Card.TLabel"
+        ).pack(side="left", padx=14)
+        ttk.Button(
+            source_row, text="Clear", command=self.clear_edit_pdf, style="Card.TButton"
+        ).pack(side="right", padx=14)
+
+        body = ttk.Frame(self.forms_tab, style="Card.TFrame")
+        body.pack(fill="both", expand=True, pady=(0, 6))
+
+        # NOTE: a scrolled card, because a real form often carries dozens of
+        # fields; without scrolling the Fill button would leave the screen
+        canvas = tk.Canvas(body, background=theme.SURFACE, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        self.forms_scroll = ttk.Frame(canvas, style="Card.TFrame")
+        self.forms_scroll.bind(
+            "<Configure>",
+            lambda _e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        window = canvas.create_window((0, 0), window=self.forms_scroll, anchor="nw")
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(window, width=event.width),
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        scrollbar.pack(side="right", fill="y", padx=(0, 12))
+        canvas.bind(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(-1 * (event.delta // 120), "units"),
+        )
+        self.forms_canvas = canvas
+
+        self.forms_entries: dict[str, ttk.Entry] = {}
+        self.forms_checkboxes: dict[str, tk.BooleanVar] = {}
+        self.forms_choiceboxes: dict[str, ttk.Combobox] = {}
+        self.forms_fields: list = []
+        self.forms_hint_var = tk.StringVar(
+            value="Import a PDF, then fill the fields it declares."
+        )
+        ttk.Label(
+            self.forms_scroll,
+            textvariable=self.forms_hint_var,
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", padx=14, pady=12)
+
+        action = theme.card(self.forms_tab)
+        action.pack(fill="x", pady=(0, 6))
+        self.forms_apply_button = ttk.Button(
+            action, text="Fill & Save", command=self.run_fill_forms,
+            style="Accent.TButton", state="disabled",
+        )
+        self.forms_apply_button.pack(side="left", padx=14, pady=12)
+        ttk.Label(
+            action,
+            text="  Writes a filled copy beside the original; the original stays blank.",
+            style="CardMuted.TLabel",
+        ).pack(side="left")
+        self.forms_status_var = tk.StringVar(value="Ready")
+        ttk.Label(
+            action, textvariable=self.forms_status_var, style="Card.TLabel"
+        ).pack(side="right", padx=14)
+
+    def _build_annotate_tab_area(self) -> None:
+        """Build the Annotate page: real, selectable PDF annotations."""
+        header = theme.page_header(
+            self.annotate_tab,
+            "Annotate",
+            "Add highlights, sticky notes and boxes that live IN the PDF file, so "
+            "a reader can still select, search and remove them. Each save writes "
+            "a new copy; the original is untouched.",
+        )
+        header.pack(anchor="w", pady=(0, 10))
+
+        source_row = ttk.Frame(self.annotate_tab, style="Card.TFrame")
+        source_row.pack(fill="x", pady=(0, 10))
+        ttk.Button(
+            source_row, text="Import PDF", command=self.open_edit_pdf,
+            style="Accent.TButton",
+        ).pack(side="left", padx=14, pady=10)
+        self.annotate_source_var = tk.StringVar(value="No PDF loaded")
+        ttk.Label(
+            source_row, textvariable=self.annotate_source_var, style="Card.TLabel"
+        ).pack(side="left", padx=14)
+        ttk.Button(
+            source_row, text="Clear", command=self.clear_edit_pdf, style="Card.TButton"
+        ).pack(side="right", padx=14)
+
+        body = ttk.Frame(self.annotate_tab, style="Card.TFrame")
+        body.pack(fill="both", expand=True, pady=(0, 6))
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        viewer = ttk.Frame(body, style="Card.TFrame")
+        viewer.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 4))
+        viewer.rowconfigure(0, weight=1)
+        viewer.columnconfigure(0, weight=1)
+
+        self.annotate_canvas = tk.Canvas(
+            viewer, background="#e2e7ee", highlightthickness=0, cursor="crosshair"
+        )
+        self.annotate_canvas.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(
+            viewer, orient="vertical", command=self.annotate_canvas.yview
+        )
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.annotate_canvas.configure(yscrollcommand=scroll.set)
+
+        self.annotate_image = None
+        self.annotate_items: list[dict] = []
+        self.annotate_page = 1
+        self.annotate_total_pages = 0
+        self.annotate_drag_origin: tuple[float, float] | None = None
+
+        nav = ttk.Frame(body, style="Card.TFrame")
+        nav.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
+        self.annotate_prev = ttk.Button(
+            nav, text="◀", width=3, command=lambda: self._navigate_annotate(-1),
+        )
+        self.annotate_prev.grid(row=0, column=0)
+        self.annotate_page_var = tk.StringVar(value="Page 0 of 0")
+        ttk.Label(nav, textvariable=self.annotate_page_var).grid(row=0, column=1, padx=8)
+        self.annotate_next = ttk.Button(
+            nav, text="▶", width=3, command=lambda: self._navigate_annotate(1),
+        )
+        self.annotate_next.grid(row=0, column=2, padx=(0, 12))
+
+        ttk.Label(nav, text="Type:").grid(row=0, column=3, padx=(0, 4))
+        self.annotate_kind_var = tk.StringVar(value=pdf_annotations.HIGHLIGHT)
+        self.annotate_kind = ttk.Combobox(
+            nav,
+            textvariable=self.annotate_kind_var,
+            values=[
+                pdf_annotations.HIGHLIGHT,
+                pdf_annotations.NOTE,
+                pdf_annotations.RECTANGLE,
+            ],
+            state="readonly",
+            width=10,
+        )
+        self.annotate_kind.grid(row=0, column=4, padx=(0, 12))
+
+        ttk.Label(nav, text="Colour:").grid(row=0, column=5, padx=(0, 4))
+        self.annotate_colour_var = tk.StringVar(value="yellow")
+        self.annotate_colour = ttk.Combobox(
+            nav,
+            textvariable=self.annotate_colour_var,
+            values=list(pdf_annotations.HIGHLIGHT_COLOURS),
+            state="readonly",
+            width=8,
+        )
+        self.annotate_colour.grid(row=0, column=6, padx=(0, 12))
+
+        ttk.Label(nav, text="Note text:").grid(row=0, column=7, padx=(0, 4))
+        self.annotate_note_var = tk.StringVar()
+        self.annotate_note_entry = ttk.Entry(nav, textvariable=self.annotate_note_var)
+        self.annotate_note_entry.grid(row=0, column=8, sticky="ew", padx=(0, 12))
+        nav.columnconfigure(8, weight=1)
+
+        ttk.Button(nav, text="Add", command=self._add_annotate_item).grid(
+            row=0, column=9, padx=(0, 6)
+        )
+        ttk.Button(nav, text="Clear page", command=self._clear_annotate_items).grid(
+            row=0, column=10
+        )
+
+        self.annotate_canvas.bind("<Button-1>", self._annotate_press, add="+")
+        self.annotate_canvas.bind("<B1-Motion>", self._annotate_drag, add="+")
+        self.annotate_canvas.bind("<ButtonRelease-1>", self._annotate_release, add="+")
+
+        self.annotate_hint_var = tk.StringVar(
+            value="Drag a box on the page, choose a type, then Add."
+        )
+        ttk.Label(
+            body, textvariable=self.annotate_hint_var, style="CardMuted.TLabel"
+        ).grid(row=2, column=0, sticky="w", padx=12, pady=(0, 4))
+
+        action = theme.card(self.annotate_tab)
+        action.pack(fill="x", pady=(0, 6))
+        self.annotate_apply_button = ttk.Button(
+            action, text="Save annotated copy", command=self.run_annotate,
+            style="Accent.TButton", state="disabled",
+        )
+        self.annotate_apply_button.pack(side="left", padx=14, pady=12)
+        ttk.Label(
+            action,
+            text="  Writes a new PDF with the annotations stored as real objects.",
+            style="CardMuted.TLabel",
+        ).pack(side="left")
+        self.annotate_status_var = tk.StringVar(value="Ready")
+        ttk.Label(
+            action, textvariable=self.annotate_status_var, style="Card.TLabel"
+        ).pack(side="right", padx=14)
 
     def _build_edit_area(self) -> None:
         """Build the page organiser, visual text editor, and PDF tools."""
@@ -1887,6 +2162,7 @@ class App:
         self.edit_rotations = {}
         self.visual_text_page = 1
         self.visual_text_total_pages = count
+        self.annotate_total_pages = count
         self._visual_text_ocr_warning_shown = False
         self.visual_text_edits.clear()
         getattr(self, "redacted_visual_text", {}).clear()
@@ -1930,9 +2206,20 @@ class App:
         self._text_redo.clear()
         self._sync_text_history()
         self._update_visual_text_nav()
+        # NOTE: the forms and annotate pages read the SAME imported document,
+        # so a fresh import (or a Clear) has to refresh both of them too
+        self._refresh_forms_fields()
+        self._annotate_reset()
+        if source is not None and getattr(self, "current_page", "") == "annotate":
+            self._load_annotate_page()
 
     def _set_organise_source(self, text: str) -> None:
-        for attr in ("organise_source_var", "utilities_source_var"):
+        for attr in (
+            "organise_source_var",
+            "utilities_source_var",
+            "forms_source_var",
+            "annotate_source_var",
+        ):
             var = getattr(self, attr, None)
             if var is not None:
                 var.set(text)
@@ -3260,6 +3547,325 @@ class App:
             self.config["edit_out_dir"] = folder
             self._save_settings()
 
+    # ---------- annotate ----------
+
+    def _annotate_reset(self) -> None:
+        """Drop the annotations and the page the editor was holding."""
+        canvas = getattr(self, "annotate_canvas", None)
+        if canvas is None:
+            # NOTE: a headless harness may build the editor without this page
+            return
+        self.annotate_items = []
+        self.annotate_page = 1
+        self.annotate_drag_origin = None
+        self.annotate_image = None
+        canvas.delete("all")
+        canvas.configure(scrollregion=(0, 0, 0, 0))
+        self.annotate_page_var.set("Page 0 of 0")
+
+    def _load_annotate_page(self) -> None:
+        """Render the current page and redraw the pending annotations."""
+        from PIL import ImageTk
+
+        src = self.edit_source
+        if src is None:
+            return
+        try:
+            image = pdf_render.render_page_pil(src, self.annotate_page - 1, dpi=110)
+        except ConversionError as exc:
+            self.annotate_hint_var.set(str(exc))
+            return
+        self.annotate_image = theme._keep(
+            ImageTk.PhotoImage(image, master=self.root)
+        )
+        # NOTE: PhotoImage exposes width()/height() as METHODS, so the page
+        # size is stored as plain numbers for the coordinate maths
+        self.annotate_render_px = (image.width, image.height)
+        self.annotate_render_scale = 110 / 72.0
+        canvas = self.annotate_canvas
+        canvas.delete("all")
+        canvas.create_image(0, 0, image=self.annotate_image, anchor="nw", tags="page")
+        canvas.configure(scrollregion=(0, 0, image.width, image.height))
+        self.annotate_page_var.set(
+            f"Page {self.annotate_page} of {self.annotate_total_pages}"
+        )
+        self._redraw_annotate_items()
+
+    def _navigate_annotate(self, delta: int) -> None:
+        """Show the previous or the next page."""
+        if not self.annotate_total_pages:
+            return
+        page = self.annotate_page + delta
+        if 1 <= page <= self.annotate_total_pages:
+            self.annotate_page = page
+            self._load_annotate_page()
+
+    def _annotate_to_pdf(self, rect):
+        """Convert a canvas box into PDF points measured from the bottom-left."""
+        scale = getattr(self, "annotate_render_scale", 110 / 72.0)
+        size = getattr(self, "annotate_render_px", None)
+        if size is None:
+            return None
+        x0, y0, x1, y1 = rect
+        left, right = sorted((x0 * 72 / scale, x1 * 72 / scale))
+        top_px, bottom_px = sorted((y0, y1))
+        height = size[1]
+        # NOTE: the canvas measures from the page top, the PDF from the bottom
+        top = (height - top_px) * 72 / scale
+        bottom = (height - bottom_px) * 72 / scale
+        return (left, bottom, right, top)
+
+    def _annotate_press(self, event) -> None:
+        canvas = self.annotate_canvas
+        self.annotate_drag_origin = (canvas.canvasx(event.x), canvas.canvasy(event.y))
+
+    def _annotate_drag(self, event) -> None:
+        origin = self.annotate_drag_origin
+        if origin is None:
+            return
+        canvas = self.annotate_canvas
+        canvas.delete("drag")
+        x1, y1 = canvas.canvasx(event.x), canvas.canvasy(event.y)
+        canvas.create_rectangle(
+            origin[0], origin[1], x1, y1,
+            outline=theme.ACCENT, width=2, tags="drag",
+        )
+
+    def _annotate_release(self, event) -> None:
+        origin = self.annotate_drag_origin
+        self.annotate_drag_origin = None
+        if origin is None:
+            return
+        canvas = self.annotate_canvas
+        canvas.delete("drag")
+        x1, y1 = canvas.canvasx(event.x), canvas.canvasy(event.y)
+        if abs(x1 - origin[0]) < 4 or abs(y1 - origin[1]) < 4:
+            self.annotate_hint_var.set("Drag a larger box to place an annotation.")
+            return
+        self._add_annotate_rect((origin[0], origin[1], x1, y1))
+
+    def _add_annotate_item(self) -> None:
+        """Add an annotation from the current drag box."""
+        canvas = self.annotate_canvas
+        box = canvas.bbox("drag")
+        if not box:
+            self.annotate_hint_var.set("Drag a box on the page first.")
+            return
+        canvas.delete("drag")
+        self._add_annotate_rect(box)
+
+    def _add_annotate_rect(self, canvas_rect) -> None:
+        """Queue one annotation for the current page."""
+        kind = self.annotate_kind_var.get() or pdf_annotations.HIGHLIGHT
+        if kind == pdf_annotations.NOTE and not self.annotate_note_var.get().strip():
+            self.annotate_hint_var.set("A sticky note needs text in the note field.")
+            return
+        box = self._annotate_to_pdf(canvas_rect)
+        if box is None:
+            return
+        self.annotate_items.append(
+            {
+                "kind": kind,
+                "page": self.annotate_page,
+                "rect": box,
+                "text": self.annotate_note_var.get(),
+                "colour": self.annotate_colour_var.get(),
+            }
+        )
+        self.annotate_hint_var.set(
+            f"{len(self.annotate_items)} annotation(s) queued. Save to write them."
+        )
+        self.annotate_apply_button.configure(state="normal")
+        self._redraw_annotate_items()
+
+    def _clear_annotate_items(self) -> None:
+        """Forget every annotation queued for the current page."""
+        before = len(self.annotate_items)
+        self.annotate_items = [
+            item for item in self.annotate_items
+            if item["page"] != self.annotate_page
+        ]
+        removed = before - len(self.annotate_items)
+        self.annotate_hint_var.set(
+            f"Cleared {removed} annotation(s) on this page."
+            if removed
+            else "Nothing queued on this page."
+        )
+        if not self.annotate_items:
+            self.annotate_apply_button.configure(state="disabled")
+        self._redraw_annotate_items()
+
+    def _redraw_annotate_items(self) -> None:
+        """Draw the queued annotations over the rendered page."""
+        canvas = self.annotate_canvas
+        canvas.delete("annot")
+        colours = {
+            "yellow": "#fff176",
+            "green": "#a5d6a7",
+            "cyan": "#80deea",
+            "magenta": "#f48fb1",
+            "red": "#ef9a9a",
+        }
+        for item in self.annotate_items:
+            if item["page"] != self.annotate_page:
+                continue
+            scale = getattr(self, "annotate_render_scale", 110 / 72.0)
+            size = getattr(self, "annotate_render_px", None)
+            if size is None:
+                continue
+            left, bottom, right, top = item["rect"]
+            x0 = left * scale
+            x1 = right * scale
+            y0 = size[1] - top * scale
+            y1 = size[1] - bottom * scale
+            colour = colours.get(item.get("colour", ""), colours["yellow"])
+            if item["kind"] == pdf_annotations.HIGHLIGHT:
+                canvas.create_rectangle(
+                    x0, y0, x1, y1, fill=colour, outline="", stipple="gray50",
+                    tags="annot",
+                )
+            elif item["kind"] == pdf_annotations.NOTE:
+                canvas.create_rectangle(
+                    x0, y0, x1, y1, fill="#ffe082", outline=theme.ACCENT,
+                    tags="annot",
+                )
+                canvas.create_text(
+                    (x0 + x1) / 2, (y0 + y1) / 2,
+                    text=item.get("text", ""), width=max(40, x1 - x0),
+                    font=("TkDefaultFont", 9), tags="annot",
+                )
+            else:
+                canvas.create_rectangle(
+                    x0, y0, x1, y1, outline=theme.ACCENT, width=2, tags="annot",
+                )
+
+    def run_annotate(self) -> None:
+        """Write a copy of the document carrying the queued annotations."""
+        src = self.edit_source
+        if src is None:
+            return
+        if not self.annotate_items:
+            self.annotate_status_var.set("Nothing to save: drag a box first.")
+            return
+        items = [
+            pdf_annotations.Annotation(
+                kind=item["kind"],
+                page=item["page"],
+                rect=item["rect"],
+                text=item["text"],
+                colour=item["colour"],
+            )
+            for item in self.annotate_items
+        ]
+        target = src.with_name(f"{src.stem}_annotated.pdf")
+
+        def work():
+            return pdf_annotations.add_annotations(src, target, items)
+
+        def done(path: Path) -> None:
+            self.annotate_status_var.set(f"Annotated copy saved: {path.name}")
+
+        self._run_edit_task_custom(work, done, "Annotated copy saved")
+
+    # ---------- fill forms ----------
+
+    def _refresh_forms_fields(self) -> None:
+        """Rebuild the field rows for the imported document."""
+        scroll = getattr(self, "forms_scroll", None)
+        if scroll is None:
+            # NOTE: a headless harness may build the editor without this page
+            return
+        for child in scroll.winfo_children():
+            child.destroy()
+        self.forms_entries.clear()
+        self.forms_checkboxes.clear()
+        self.forms_choiceboxes.clear()
+
+        src = self.edit_source
+        self.forms_fields = []
+        if src is None:
+            self.forms_hint_var.set("Import a PDF to see its fields.")
+            self.forms_apply_button.configure(state="disabled")
+            return
+        try:
+            fields = pdf_forms.list_fields(src)
+        except ConversionError as exc:
+            self.forms_hint_var.set(str(exc))
+            self.forms_apply_button.configure(state="disabled")
+            return
+
+        self.forms_fields = fields
+        if not fields:
+            self.forms_hint_var.set("This PDF has no fillable form fields.")
+            self.forms_apply_button.configure(state="disabled")
+            return
+
+        self.forms_hint_var.set(
+            f"{len(fields)} fillable field(s). Fill them, then press Fill & Save."
+        )
+        for item in fields:
+            row = ttk.Frame(self.forms_scroll, style="Card.TFrame")
+            row.pack(fill="x", padx=14, pady=(8, 0))
+            ttk.Label(
+                row,
+                text=f"{item.label}  (p.{item.page})",
+                style="Card.TLabel",
+                width=34,
+                anchor="w",
+            ).pack(side="left")
+            if item.kind == pdf_forms.BUTTON_FIELD:
+                var = tk.BooleanVar(value=bool(item.value))
+                ttk.Checkbutton(
+                    row, variable=var, style="Card.TCheckbutton"
+                ).pack(side="right")
+                self.forms_checkboxes[item.name] = var
+            elif item.kind == pdf_forms.CHOICE_FIELD and item.options:
+                combo = ttk.Combobox(row, values=item.options, state="readonly")
+                combo.set(str(item.value))
+                combo.pack(side="right", fill="x", expand=True, padx=(8, 0))
+                self.forms_choiceboxes[item.name] = combo
+            else:
+                entry = ttk.Entry(row)
+                entry.insert(0, str(item.value or ""))
+                entry.pack(side="right", fill="x", expand=True, padx=(8, 0))
+                self.forms_entries[item.name] = entry
+        self.forms_apply_button.configure(state="normal")
+
+    def _fill_form_values(self) -> dict[str, str | bool]:
+        """Collect the values the user typed into the field rows."""
+        values: dict[str, str | bool] = {}
+        for name, entry in self.forms_entries.items():
+            values[name] = entry.get()
+        for name, var in self.forms_checkboxes.items():
+            values[name] = bool(var.get())
+        for name, combo in self.forms_choiceboxes.items():
+            values[name] = combo.get()
+        # NOTE: empty entries mean "leave the field as it is", so they are
+        # dropped rather than written as blank values
+        return {name: value for name, value in values.items() if value}
+
+    def run_fill_forms(self) -> None:
+        """Write a filled copy of the imported form."""
+        src = self.edit_source
+        if src is None:
+            return
+        values = self._fill_form_values()
+        if not values:
+            messagebox.showinfo(
+                "PDF-X", "Fill at least one field first.",
+                parent=self._edit_dialog_parent(),
+            )
+            return
+        target = src.with_name(f"{src.stem}_filled.pdf")
+
+        def work():
+            return pdf_forms.fill_fields(src, target, values)
+
+        def done(path: Path) -> None:
+            self.forms_status_var.set(f"Filled copy saved: {path.name}")
+
+        self._run_edit_task_custom(work, done, "Filled copy saved")
+
     def _run_edit_task(self, work, done_message: str) -> None:
         """Run a blocking edit on the worker thread and report through the queue."""
 
@@ -3283,15 +3889,21 @@ class App:
 
     def _set_edit_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
-        self.edit_apply_button.configure(state=state)
-        if not busy:
-            self.edit_progress.configure(value=self.edit_progress["maximum"])
-        if getattr(self, "_editor_window_open", False):
-            self.expanded_edit_apply_button.configure(state=state)
+        # NOTE: every widget touch is guarded, because a job can finish after
+        # the window was closed (or a test tore the shell down); a result must
+        # never crash the app with "invalid command name"
+        try:
+            self.edit_apply_button.configure(state=state)
             if not busy:
-                self._expanded_edit_progress.configure(
-                    value=self._expanded_edit_progress["maximum"]
-                )
+                self.edit_progress.configure(value=self.edit_progress["maximum"])
+            if getattr(self, "_editor_window_open", False):
+                self.expanded_edit_apply_button.configure(state=state)
+                if not busy:
+                    self._expanded_edit_progress.configure(
+                        value=self._expanded_edit_progress["maximum"]
+                    )
+        except tk.TclError:
+            pass
 
     def _edit_log_write(self, message: str) -> None:
         """Write an edit line to the internal log.

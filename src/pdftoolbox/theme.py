@@ -306,6 +306,18 @@ def _glyph_commands() -> dict[str, list[tuple]]:
             ("arc", 3, 3, 11, 11, 0, 360),
             ("line", 13, 13, 17, 17),
         ],
+        "forms": [
+            # a form: three ruled rows with a tick box at the top left
+            ("poly", [(3, 3), (7, 3), (7, 7), (3, 7)]),
+            ("line", 9, 5, 17, 5),
+            ("line", 3, 10, 17, 10),
+            ("line", 3, 14, 17, 14),
+        ],
+        "annotate": [
+            # a highlighter stroke over a line of text
+            ("poly", [(4, 15), (4, 12), (13, 4), (16, 7), (7, 15)]),
+            ("line", 9, 8, 16, 8),
+        ],
     }
 
 

@@ -16,8 +16,9 @@ tk = pytest.importorskip("tkinter")
 from pdftoolbox.gui import App  # noqa: E402
 from pdftoolbox.gui import drop_paths, output_undecided  # noqa: E402
 from pdftoolbox import gui as gui_module  # noqa: E402
-from pdftoolbox.engines import pdf_edit  # noqa: E402
+from pdftoolbox.engines import pdf_annotations, pdf_edit, pdf_forms  # noqa: E402
 from pdftoolbox.system_fonts import FontFace  # noqa: E402
+from reportlab.lib.pagesizes import A4  # noqa: E402
 
 
 class TestOutputUndecided:
@@ -1407,11 +1408,142 @@ def test_the_save_button_is_gone(scratch_app) -> None:
     assert str(app.edit_apply_button["text"]) == "Apply Changes"
 
 
+def _wait_for_edit_job(app, seconds: int = 10) -> None:
+    """Pump the event loop until the running edit job reports back."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        app.root.update()
+        if not (app.worker and app.worker.is_alive()):
+            return
+        time.sleep(0.02)
+
+
+def _form_pdf(tmp_path) -> Path:
+    """A one-page PDF carrying a text field, a checkbox and a choice."""
+    from reportlab.pdfgen import canvas
+
+    src = tmp_path / "form.pdf"
+    pdf = canvas.Canvas(str(src), pagesize=A4)
+    form = pdf.acroForm
+    form.textfield(name="fullname", tooltip="Full name", x=72, y=700, width=200, height=20)
+    form.checkbox(name="agree", tooltip="I agree", x=72, y=650, size=20)
+    form.choice(
+        name="colour", tooltip="Colour", x=72, y=600, width=140, height=20,
+        value="red", options=["red", "green", "blue"],
+    )
+    pdf.showPage()
+    pdf.save()
+    return src
+
+
+def test_forms_page_lists_the_fields_of_an_imported_form(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._show_page("forms")
+    src = _form_pdf(tmp_path)
+    app._on_edit_drop(SimpleNamespace(data="{" + str(src) + "}"))
+    app.root.update()
+
+    assert set(app.forms_entries) == {"fullname"}
+    assert set(app.forms_checkboxes) == {"agree"}
+    assert set(app.forms_choiceboxes) == {"colour"}
+    assert str(app.forms_apply_button["state"]) == "normal"
+
+
+def test_forms_page_clears_with_the_document(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._show_page("forms")
+    app._on_edit_drop(SimpleNamespace(data="{" + str(_form_pdf(tmp_path)) + "}"))
+    app.root.update()
+    assert app.forms_entries
+
+    app.clear_edit_pdf()
+    app.root.update()
+    assert not app.forms_entries
+    assert not app.forms_checkboxes
+    assert str(app.forms_apply_button["state"]) == "disabled"
+
+
+def test_fill_forms_writes_a_filled_copy(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._show_page("forms")
+    src = _form_pdf(tmp_path)
+    app._on_edit_drop(SimpleNamespace(data="{" + str(src) + "}"))
+    app.root.update()
+
+    app.forms_entries["fullname"].insert(0, "Ada Lovelace")
+    app.forms_checkboxes["agree"].set(True)
+    app.run_fill_forms()
+    _wait_for_edit_job(app)
+
+    filled = src.with_name("form_filled.pdf")
+    assert filled.is_file()
+    values = pdf_forms.field_values(filled)
+    assert values["fullname"] == "Ada Lovelace"
+    assert values["agree"] is True
+
+
+def test_annotate_page_queues_and_saves_annotations(scratch_app, tmp_path) -> None:
+    app = scratch_app
+    app._show_page("annotate")
+    src = _text_pdf(tmp_path)
+    app._on_edit_drop(SimpleNamespace(data="{" + str(src) + "}"))
+    app.root.update()
+    assert app.annotate_total_pages == 1
+
+    app.annotate_kind_var.set(pdf_annotations.HIGHLIGHT)
+    app._add_annotate_rect((50, 50, 250, 80))
+    assert len(app.annotate_items) == 1
+    assert app.annotate_items[0]["page"] == 1
+    # NOTE: the queued box is stored in PDF points from the bottom-left
+    assert app.annotate_items[0]["rect"][3] > app.annotate_items[0]["rect"][1]
+
+    app.run_annotate()
+    _wait_for_edit_job(app)
+
+    annotated = src.with_name("viewer_annotated.pdf")
+    assert annotated.is_file()
+    found = pdf_annotations.list_annotations(annotated)
+    assert found and found[0]["subtype"] == "Highlight"
+
+
+def test_annotate_clear_page_only_drops_the_current_page(scratch_app) -> None:
+    app = scratch_app
+    app._show_page("annotate")
+    app.annotate_items = [
+        {"kind": pdf_annotations.NOTE, "page": 1, "rect": (0, 0, 10, 10), "text": "a"},
+        {"kind": pdf_annotations.NOTE, "page": 2, "rect": (0, 0, 10, 10), "text": "b"},
+    ]
+    app.annotate_page = 1
+    app._clear_annotate_items()
+    assert [item["page"] for item in app.annotate_items] == [2]
+
+
+def test_annotate_note_needs_text(scratch_app) -> None:
+    app = scratch_app
+    app._show_page("annotate")
+    app.annotate_kind_var.set(pdf_annotations.NOTE)
+    app.annotate_note_var.set("")
+    app._add_annotate_rect((10, 10, 60, 40))
+    assert app.annotate_items == []
+    assert "needs text" in app.annotate_hint_var.get()
+
+
+def test_window_toggle_returns_to_the_compact_size(scratch_app) -> None:
+    app = scratch_app
+    app.root.update()
+    app._restore_window()
+    app.root.update()
+    assert not getattr(app, "_window_maximised", False)
+    assert app.root.geometry().startswith("1180x800")
+
+
 def test_sidebar_navigation_shows_one_page_at_a_time(scratch_app) -> None:
     app = scratch_app
     app.root.update()
     # the Organise PDF page is its own sidebar entry, between Merge and Edit
-    for key in ("convert", "merge", "organise", "edit", "about"):
+    for key in ("convert", "merge", "organise", "edit", "forms", "annotate", "about"):
         app._show_page(key)
         app.root.update()
         assert app.current_page == key
@@ -1430,6 +1562,8 @@ def test_sidebar_lists_every_page_including_utilities(scratch_app) -> None:
         "Merge PDF",
         "Organise PDF",
         "Edit PDF",
+        "Fill Forms",
+        "Annotate",
         "Utilities",
         "About",
     ]
@@ -1438,10 +1572,14 @@ def test_sidebar_lists_every_page_including_utilities(scratch_app) -> None:
         "merge",
         "organise",
         "edit",
+        "forms",
+        "annotate",
         "utilities",
         "about",
     ]
     assert app._pages["utilities"] is app.utilities_tab
+    assert app._pages["forms"] is app.forms_tab
+    assert app._pages["annotate"] is app.annotate_tab
 
 
 def test_edit_pdf_has_no_sub_notebook(scratch_app) -> None:
