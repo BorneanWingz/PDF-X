@@ -1581,6 +1581,58 @@ def test_sidebar_lists_every_page_including_utilities(scratch_app) -> None:
     assert app._pages["forms"] is app.forms_tab
     assert app._pages["annotate"] is app.annotate_tab
 
+def test_every_sidebar_row_has_a_glyph_and_the_same_height(scratch_app) -> None:
+    """Regression: Fill Forms / Annotate PDF shipped without a glyph.
+
+    A Tk label measures width/height in CHARACTERS until an image is set, so
+    the two glyph-less rows stood ~8x taller than the rest of the rail and
+    pushed the other entries out of shape.
+    """
+    app = scratch_app
+    app.root.update()
+    app._show_page("convert")
+    app.root.update()
+
+    for key, row in app._sidebar_rows.items():
+        assert row.icon.cget("image"), f"{key} row has a glyph"
+        assert app._glyphs.get(row.glyph), f"{row.glyph} glyph is available"
+
+    heights = {
+        key: row.winfo_reqheight() for key, row in app._sidebar_rows.items()
+    }
+    assert len(set(heights.values())) == 1, heights
+
+
+def test_collapsed_sidebar_shows_only_the_glyphs(scratch_app) -> None:
+    # the rail folds to icons only; every label is hidden and every icon stays
+    app = scratch_app
+    app._apply_sidebar_state(True)
+    app.root.update()
+    for key, row in app._sidebar_rows.items():
+        assert not row.label.winfo_manager(), f"{key} label is hidden"
+        assert row.icon.winfo_manager() == "pack", f"{key} icon stays visible"
+    assert app.sidebar.cget("width") == app._SIDEBAR_COLLAPSED_WIDTH
+
+    app._apply_sidebar_state(False)
+    app.root.update()
+    for key, row in app._sidebar_rows.items():
+        assert row.label.winfo_manager() == "pack", f"{key} label is back"
+
+
+def test_header_has_no_window_size_button(scratch_app) -> None:
+    # the title-bar controls already maximise; the header must not duplicate it
+    app = scratch_app
+    app.root.update()
+    assert not hasattr(app, "window_size_button")
+    texts = [
+        child.cget("text")
+        for child in app.shell.winfo_children()[0].winfo_children()
+        if "text" in child.keys()
+    ]
+    assert "Maximise" not in texts
+    assert "Restore size" not in texts
+
+
 
 def test_edit_pdf_has_no_sub_notebook(scratch_app) -> None:
     # PDF Tools moved out of Edit PDF into its own Utilities page, so the tab

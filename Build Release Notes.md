@@ -19,8 +19,8 @@ This document lists the changelog of PDF-X.
   boxes that are stored as real annotation objects in the PDF.
 - Made the invisible OCR text layer align word by word instead of line by
   line, so search hits and copied text land under the exact word.
-- The workspace now opens maximized and can drop back to the compact 1180x800
-  size from the header button or Alt+F9.
+- The workspace opens maximized and drops back to the compact 1180x800 size
+  with Alt+F9; the header no longer duplicates the window's own maximize button.
 
 ### Version 0.1.8
 

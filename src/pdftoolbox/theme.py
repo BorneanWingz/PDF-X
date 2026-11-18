@@ -464,8 +464,19 @@ def sidebar_row(
     changed per row by reconfiguring the background of every child.
     """
     row = tk.Frame(parent, background=SIDEBAR, cursor="hand2")
-    icon = tk.Label(row, image=images.get(glyph), background=SIDEBAR, width=20, height=20)
-    icon.image = images.get(glyph)
+    icon = tk.Label(row, background=SIDEBAR)
+    image = images.get(glyph)
+    if image is None:
+        # NOTE: width/height on a Tk label count PIXELS only while an image is
+        # set - without one they are character units, so ``width=20, height=20``
+        # would make a glyph-less row ~8x taller than its neighbours. Drawing
+        # the glyph here keeps the row aligned: ``draw_glyph`` falls back to a
+        # neutral square for an unknown name, and ``images`` gains the result
+        # so the next row asking for it pays nothing.
+        image = draw_glyph(glyph, 20, master=parent)
+        images[glyph] = image
+    icon.configure(image=image)
+    icon.image = image
     icon.pack(side="left", padx=(12, 0))
     label = tk.Label(
         row,
@@ -479,6 +490,7 @@ def sidebar_row(
 
     row.icon = icon
     row.label = label
+    row.glyph = glyph
     return row
 
 

@@ -42,6 +42,31 @@ office_suffixes = [
     ".odt", ".ods", ".odp", ".rtf", ".csv",
 ]
 
+#: The sidebar navigation, in order: (page key, caption, glyph name).
+#:
+#: NOTE: one declaration drives BOTH the glyph set and the rows, so a new page
+#: can never ship with a blank entry. That bug happened to the Fill Forms and
+#: Annotate PDF rows: their glyphs were defined in the theme but never listed
+#: in the rendered set, and a tk.Label without an image measures its width and
+#: height in characters, so those two rows stood about eight times taller than
+#: the rest of the rail.
+SIDEBAR_ENTRIES = (
+    ("convert", "Convert File", "convert"),
+    ("merge", "Merge PDF", "merge"),
+    ("organise", "Organise PDF", "organise"),
+    ("edit", "Edit PDF", "edit"),
+    ("annotate", "Annotate PDF", "annotate"),
+    ("forms", "Fill Forms", "forms"),
+    ("utilities", "Utilities", "tools"),
+    ("about", "About", "about"),
+)
+
+#: Glyphs the page bodies still need beyond the navigation entries.
+EXTRA_GLYPHS = (
+    "up", "down", "rotate_left", "rotate_right", "rotate_180",
+    "delete", "reset", "pdf", "folder", "add",
+)
+
 
 def output_undecided(same_folder: bool, out_dir_text: str) -> bool:
     """True when the user chose neither an output folder nor 'same folder'.
@@ -159,8 +184,8 @@ class App:
         root.geometry(self._restore_geometry)
         root.minsize(980, 680)
         # NOTE: the workspace opens maximized because the editor and the page
-        # lists all benefit from height; Alt+F9 / the header button put the
-        # window back to the compact 1180x800 size (see _toggle_maximised).
+        # lists all benefit from height; Alt+F9 puts the window back to the
+        # compact 1180x800 size (see _toggle_maximised).
         root.bind("<Alt-F9>", lambda _event: self._toggle_maximised())
         self._apply_window_icon(root)
         self._configure_styles(root)
@@ -246,16 +271,15 @@ class App:
         self._window_maximised = False
 
     def _toggle_maximised(self) -> None:
-        """Switch between the maximised workspace and the compact window."""
+        """Switch between the maximised workspace and the compact window.
+
+        NOTE: bound to Alt+F9 only, because the header keeps no Maximise /
+        Restore button; the window's own title-bar controls do that job.
+        """
         if getattr(self, "_window_maximised", False):
             self._restore_window()
         else:
             self._maximise_window()
-        button = getattr(self, "window_size_button", None)
-        if button is not None:
-            button.configure(
-                text="Restore size" if getattr(self, "_window_maximised", False) else "Maximise"
-            )
 
     # ---------- settings ----------
 
@@ -366,16 +390,9 @@ class App:
         self.promo_label.grid(row=0, column=3, sticky="e", padx=18)
         self.promo_label.bind("<Button-1>", self._open_promo_url)
         self._promo_url = ""
-
-        # NOTE: the workspace opens maximized, so this button is the one-click
-        # way back to the compact 1180x800 window (and back again)
-        self.window_size_button = ttk.Button(
-            header,
-            text="Maximise",
-            width=10,
-            command=self._toggle_maximised,
-        )
-        self.window_size_button.grid(row=0, column=4, sticky="e", padx=(0, 18))
+        # NOTE: the window opens maximized (see __init__ after_idle). There is
+        # no in-app size button: Alt+F9 still switches between the maximized
+        # workspace and the compact 1180x800 window.
 
     def _brand_mark(self, size: int):
         """The app icon as a header logo, or None when it cannot be loaded."""
@@ -399,10 +416,8 @@ class App:
         self._glyphs = {
             name: theme.draw_glyph(name, 20, master=self.root)
             for name in (
-                "convert", "merge", "organise", "edit", "tools", "about",
-                "up", "down", "rotate_left", "rotate_right",
-                "rotate_180", "delete", "reset", "pdf",
-                "folder", "add",
+                {glyph for _key, _text, glyph in SIDEBAR_ENTRIES}
+                | set(EXTRA_GLYPHS)
             )
         }
 
@@ -438,17 +453,7 @@ class App:
 
         self._sidebar_rows = {}
         self._sidebar_labels: dict[str, tk.Label] = {}
-        entries = (
-            ("convert", "Convert File", "convert"),
-            ("merge", "Merge PDF", "merge"),
-            ("organise", "Organise PDF", "organise"),
-            ("edit", "Edit PDF", "edit"),
-            ("annotate", "Annotate PDF", "annotate"),
-            ("forms", "Fill Forms", "forms"),
-            ("utilities", "Utilities", "tools"),
-            ("about", "About", "about"),
-        )
-        for key, text, glyph in entries:
+        for key, text, glyph in SIDEBAR_ENTRIES:
             row = theme.sidebar_row(nav, text, glyph, self._glyphs)
             row.pack(fill="x")
             theme.bind_click(row, lambda k=key: self._show_page(k))
@@ -494,13 +499,17 @@ class App:
         self.sidebar.configure(width=theme.sidebar_width(collapsed))
 
         # the labels carry the wording; collapsed keeps the glyphs only
-        for label in self._sidebar_labels.values():
+        for row in self._sidebar_rows.values():
             if collapsed:
-                label.pack_forget()
+                row.label.pack_forget()
+                # NOTE: the 20 px glyph sits in a 60 px rail; symmetric padding
+                # centres it instead of hugging the left edge
+                row.icon.pack_configure(side="left", padx=(20, 0))
             else:
-                label.pack(
+                row.label.pack(
                     side="left", fill="x", expand=True, padx=(10, 12), pady=8
                 )
+                row.icon.pack_configure(side="left", padx=(12, 0))
         # the recent-files listing needs the text caption to make sense
         if collapsed:
             self._recent_header.pack_forget()
