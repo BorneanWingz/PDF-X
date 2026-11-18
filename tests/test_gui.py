@@ -1508,6 +1508,94 @@ def test_annotate_page_queues_and_saves_annotations(scratch_app, tmp_path) -> No
     assert found and found[0]["subtype"] == "Highlight"
 
 
+def test_convert_tab_offers_markdown_and_converts_selected_page(
+    scratch_app, text_pdf, tmp_path
+) -> None:
+    app = scratch_app
+    app._show_page("convert")
+    app._add_paths([text_pdf])
+    assert "MARKDOWN" in app.target_box["values"]
+    app.target_var.set("MARKDOWN")
+    app.pages_var.set("2")
+    app.same_folder_var.set(False)
+    app.out_var.set(str(tmp_path / "md"))
+    app.start_convert()
+    app.worker.join(timeout=20)
+    assert not app.worker.is_alive()
+    output = tmp_path / "md" / "sample_pdfx.md"
+    assert output.exists()
+    assert "Page two content" in output.read_text(encoding="utf-8")
+
+
+def test_convert_tab_hides_markdown_for_mixed_incompatible_inputs(
+    scratch_app, text_pdf, image_file
+) -> None:
+    app = scratch_app
+    app._add_paths([text_pdf, image_file])
+    assert "MARKDOWN" not in app.target_box["values"]
+
+def test_annotate_page_centres_in_canvas_without_shifting_pdf_coordinates(
+    scratch_app, tmp_path
+) -> None:
+    app = scratch_app
+    app.root.geometry("1180x800")
+    app._show_page("annotate")
+    source = _text_pdf(tmp_path)
+    app._reset_edit_session(source, 1)
+    app._load_annotate_page()
+    app.root.update()
+
+    page_x, page_y = app.annotate_canvas.coords("page")
+    width, height = app.annotate_render_px
+    view_width = app.annotate_canvas.winfo_width()
+    view_height = app.annotate_canvas.winfo_height()
+    assert page_x == max(0, (view_width - width) // 2)
+    assert page_y == max(0, (view_height - height) // 2)
+
+    # Selection coordinates remain relative to the PDF page, not the centered
+    # display offset; drawing at the visual page origin should map to (0, 0).
+    event = SimpleNamespace(x=page_x + 10, y=page_y + 20)
+    assert app._annotate_canvas_point(event) == (10.0, 20.0)
+
+
+def test_annotate_scrolls_large_pages_and_keeps_selection_coordinates(
+    scratch_app, tmp_path
+) -> None:
+    from reportlab.pdfgen import canvas
+
+    app = scratch_app
+    app.root.geometry("980x680")
+    app._show_page("annotate")
+    source = tmp_path / "large.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(1500, 1500))
+    pdf.drawString(72, 1400, "Large page")
+    pdf.save()
+    app._on_edit_drop(SimpleNamespace(data="{" + str(source) + "}"))
+    app.root.update()
+
+    viewer = app.annotate_canvas
+    assert viewer.yview()[1] < 1
+    viewer.event_generate("<MouseWheel>", delta=-120, x=20, y=20)
+    app.root.update()
+    assert viewer.yview()[0] > 0
+    viewer.event_generate("<MouseWheel>", delta=120, x=20, y=20)
+    app.root.update()
+    assert viewer.yview()[0] == 0
+
+    horizontal = [
+        child for child in viewer.master.winfo_children()
+        if child.winfo_class() == "TScrollbar" and str(child.cget("orient")) == "horizontal"
+    ]
+    assert len(horizontal) == 1
+    app.root.tk.call(horizontal[0].cget("command"), "moveto", "0.5")
+    viewer.yview_moveto(0.5)
+    app.root.update()
+    assert viewer.xview()[0] > 0
+    point = app._annotate_canvas_point(SimpleNamespace(x=20, y=20))
+    assert point == (viewer.canvasx(20), viewer.canvasy(20))
+    assert point[0] > 20 and point[1] > 20
+
+
 def test_annotate_clear_page_only_drops_the_current_page(scratch_app) -> None:
     app = scratch_app
     app._show_page("annotate")

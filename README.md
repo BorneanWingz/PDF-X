@@ -56,6 +56,10 @@ When converting a scanned PDF to DOCX, XLSX or PPTX, PDF-X reminds you to first
 create a **SEARCHABLE-PDF** copy. You can inspect the OCR text in that copy
 before converting it to an Office format.
 
+PDF-to-Markdown exports extracted text under page headings, retaining line
+breaks. Image-only PDFs are read with offline OCR first. Images, tables and original text
+formatting are not reconstructed.
+
 ### Merge PDF
 
 Convert supported files to PDF and join them in the order shown. Files are
@@ -118,6 +122,8 @@ Add highlights, sticky notes and boxes that live IN the PDF file as real
 annotation objects, so a reader can still select, search and remove them.
 
 - Import a PDF, then drag a box on the rendered page.
+- Scroll the page with the mouse wheel or vertical scrollbar; use the horizontal
+  scrollbar for pages wider than the viewer.
 - Choose the annotation **Type** (highlight, note or rectangle), a highlight
   **Colour**, and the note **Text** for a sticky note.
 - **Add** queues the annotation for the current page; use **◀** and **▶** to
@@ -155,8 +161,8 @@ The About screen shows the version and author information. The author is
 
 | Source | Target |
 | --- | --- |
-| PDF | PNG, JPG, TIF, TXT, HTML, XLSX tables, PPTX, DOCX |
-| Scanned PDF | Searchable PDF, TXT, HTML, XLSX, PPTX, DOCX |
+| PDF | PNG, JPG, TIF, TXT, HTML, MD, XLSX tables, PPTX, DOCX |
+| Scanned PDF | Searchable PDF, TXT, HTML, MD, XLSX, PPTX, DOCX |
 | Word/Writer formats | DOCX |
 | Spreadsheet formats | XLSX |
 | Presentation formats | PPTX |

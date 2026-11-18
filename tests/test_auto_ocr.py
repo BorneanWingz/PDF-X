@@ -65,6 +65,7 @@ class TestOcrFirstTargets:
         assert convert_module.OCR_FIRST_TARGETS == {
             "txt",
             "html",
+            "md",
             "xlsx",
             "pptx",
             "docx",
@@ -94,6 +95,21 @@ class TestSearchablePdfSkipsOcr:
 
 
 class TestScannedPdfOcrsFirst:
+    def test_markdown_selected_scan_page(
+        self, scanned_pdf_pages: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        seen: list[str] = []
+        monkeypatch.setattr(ocr_engine, "ocr_pdf", _ocr_spy(seen))
+        output = convert(
+            scanned_pdf_pages, "md", out_dir=tmp_path / "md", pages=[2], ocr_dpi=200
+        )[0]
+        content = output.read_text(encoding="utf-8").upper()
+        assert seen == ["scanned_multi.pdf"]
+        assert output.name == "scanned_multi_pdfx.md"
+        assert "## PAGE 2" in content
+        assert "SECOND OCR PAGE" in content
+        assert "FIRST OCR PAGE" not in content
+
     def test_txt(self, scanned_pdf: Path, tmp_path: Path, monkeypatch) -> None:
         seen: list[str] = []
         monkeypatch.setattr(ocr_engine, "ocr_pdf", _ocr_spy(seen))

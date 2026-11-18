@@ -30,7 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--to",
         metavar="TARGET",
-        help="conversion target: png, jpg, tif, txt, html, xlsx, pptx, "
+        help="conversion target: png, jpg, tif, txt, html, md, xlsx, pptx, "
         "searchable-pdf, docx, pdf, or merge (combine two or more PDFs)",
     )
     parser.add_argument(

@@ -1263,11 +1263,21 @@ class App:
             viewer, background="#e2e7ee", highlightthickness=0, cursor="crosshair"
         )
         self.annotate_canvas.grid(row=0, column=0, sticky="nsew")
+        self.annotate_canvas.bind("<Configure>", self._centre_annotate_page, add="+")
         scroll = ttk.Scrollbar(
             viewer, orient="vertical", command=self.annotate_canvas.yview
         )
         scroll.grid(row=0, column=1, sticky="ns")
-        self.annotate_canvas.configure(yscrollcommand=scroll.set)
+        horizontal = ttk.Scrollbar(
+            viewer, orient="horizontal", command=self.annotate_canvas.xview
+        )
+        horizontal.grid(row=1, column=0, sticky="ew")
+        self.annotate_canvas.configure(
+            xscrollcommand=horizontal.set, yscrollcommand=scroll.set
+        )
+        self.annotate_canvas.bind("<MouseWheel>", self._on_annotate_wheel)
+        self.annotate_canvas.bind("<Button-4>", self._on_annotate_wheel)
+        self.annotate_canvas.bind("<Button-5>", self._on_annotate_wheel)
 
         self.annotate_image = None
         self.annotate_items: list[dict] = []
@@ -3654,6 +3664,18 @@ class App:
 
     # ---------- annotate ----------
 
+    def _on_annotate_wheel(self, event) -> str:
+        if event.num == 4:
+            units = -1
+        elif event.num == 5:
+            units = 1
+        elif event.delta:
+            units = (-1 if event.delta > 0 else 1) * max(1, abs(event.delta) // 120)
+        else:
+            return "break"
+        self.annotate_canvas.yview_scroll(units, "units")
+        return "break"
+
     def _annotate_reset(self) -> None:
         """Drop the annotations and the page the editor was holding."""
         canvas = getattr(self, "annotate_canvas", None)
@@ -3667,6 +3689,42 @@ class App:
         canvas.delete("all")
         canvas.configure(scrollregion=(0, 0, 0, 0))
         self.annotate_page_var.set("Page 0 of 0")
+
+    def _centre_annotate_page(self, _event=None) -> None:
+        """Centre the rendered page in the annotation canvas when it fits.
+
+        The page stays at the canvas origin on any axis where it is larger than
+        the viewport, preserving scroll access. Annotation coordinates remain
+        page-relative: the image and all overlays receive the same display offset.
+        """
+        canvas = getattr(self, "annotate_canvas", None)
+        size = getattr(self, "annotate_render_px", None)
+        if canvas is None or size is None:
+            return
+        width, height = size
+        view_width = canvas.winfo_width()
+        view_height = canvas.winfo_height()
+        if view_width <= 1 or view_height <= 1:
+            return
+        x = max(0, (view_width - width) // 2)
+        y = max(0, (view_height - height) // 2)
+        canvas.coords("page", x, y)
+        canvas.configure(
+            scrollregion=(0, 0, max(view_width, x + width), max(view_height, y + height))
+        )
+        self._redraw_annotate_items()
+
+    def _annotate_display_offset(self) -> tuple[int, int]:
+        """Top-left offset used to centre the annotation page in its viewport."""
+        canvas = getattr(self, "annotate_canvas", None)
+        size = getattr(self, "annotate_render_px", None)
+        if canvas is None or size is None:
+            return (0, 0)
+        width, height = size
+        return (
+            max(0, (canvas.winfo_width() - width) // 2),
+            max(0, (canvas.winfo_height() - height) // 2),
+        )
 
     def _load_annotate_page(self) -> None:
         """Render the current page and redraw the pending annotations."""
@@ -3690,11 +3748,10 @@ class App:
         canvas = self.annotate_canvas
         canvas.delete("all")
         canvas.create_image(0, 0, image=self.annotate_image, anchor="nw", tags="page")
-        canvas.configure(scrollregion=(0, 0, image.width, image.height))
         self.annotate_page_var.set(
             f"Page {self.annotate_page} of {self.annotate_total_pages}"
         )
-        self._redraw_annotate_items()
+        self._centre_annotate_page()
 
     def _navigate_annotate(self, delta: int) -> None:
         """Show the previous or the next page."""
@@ -3720,19 +3777,29 @@ class App:
         bottom = (height - bottom_px) * 72 / scale
         return (left, bottom, right, top)
 
-    def _annotate_press(self, event) -> None:
+    def _annotate_canvas_point(self, event) -> tuple[float, float]:
+        """Convert pointer coordinates to page-relative canvas coordinates."""
         canvas = self.annotate_canvas
-        self.annotate_drag_origin = (canvas.canvasx(event.x), canvas.canvasy(event.y))
+        offset_x, offset_y = self._annotate_display_offset()
+        return (
+            canvas.canvasx(event.x) - offset_x,
+            canvas.canvasy(event.y) - offset_y,
+        )
+
+    def _annotate_press(self, event) -> None:
+        self.annotate_drag_origin = self._annotate_canvas_point(event)
 
     def _annotate_drag(self, event) -> None:
         origin = self.annotate_drag_origin
         if origin is None:
             return
         canvas = self.annotate_canvas
+        offset_x, offset_y = self._annotate_display_offset()
         canvas.delete("drag")
-        x1, y1 = canvas.canvasx(event.x), canvas.canvasy(event.y)
+        x1, y1 = self._annotate_canvas_point(event)
         canvas.create_rectangle(
-            origin[0], origin[1], x1, y1,
+            origin[0] + offset_x, origin[1] + offset_y,
+            x1 + offset_x, y1 + offset_y,
             outline=theme.ACCENT, width=2, tags="drag",
         )
 
@@ -3743,7 +3810,7 @@ class App:
             return
         canvas = self.annotate_canvas
         canvas.delete("drag")
-        x1, y1 = canvas.canvasx(event.x), canvas.canvasy(event.y)
+        x1, y1 = self._annotate_canvas_point(event)
         if abs(x1 - origin[0]) < 4 or abs(y1 - origin[1]) < 4:
             self.annotate_hint_var.set("Drag a larger box to place an annotation.")
             return
@@ -3756,8 +3823,12 @@ class App:
         if not box:
             self.annotate_hint_var.set("Drag a box on the page first.")
             return
+        offset_x, offset_y = self._annotate_display_offset()
         canvas.delete("drag")
-        self._add_annotate_rect(box)
+        self._add_annotate_rect((
+            box[0] - offset_x, box[1] - offset_y,
+            box[2] - offset_x, box[3] - offset_y,
+        ))
 
     def _add_annotate_rect(self, canvas_rect) -> None:
         """Queue one annotation for the current page."""
@@ -3819,10 +3890,11 @@ class App:
             if size is None:
                 continue
             left, bottom, right, top = item["rect"]
-            x0 = left * scale
-            x1 = right * scale
-            y0 = size[1] - top * scale
-            y1 = size[1] - bottom * scale
+            offset_x, offset_y = self._annotate_display_offset()
+            x0 = offset_x + left * scale
+            x1 = offset_x + right * scale
+            y0 = offset_y + size[1] - top * scale
+            y1 = offset_y + size[1] - bottom * scale
             colour = colours.get(item.get("colour", ""), colours["yellow"])
             if item["kind"] == pdf_annotations.HIGHLIGHT:
                 canvas.create_rectangle(
@@ -4592,7 +4664,7 @@ class App:
                     notes.append(f"{option.label}: {option.note}")
 
         if len(source_targets) > 1:
-            direct_targets = {"docx", "xlsx", "pptx"}
+            direct_targets = {"docx", "xlsx", "pptx", "md"}
             options = [
                 (key, label)
                 for key, label in options

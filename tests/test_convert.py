@@ -41,7 +41,7 @@ class TestTargetsAndParsing:
 
     def test_list_targets_pdf(self, text_pdf: Path) -> None:
         keys = {option.key for option in list_targets(text_pdf)}
-        assert {"png", "jpg", "tif", "txt", "html", "xlsx", "pptx", "searchable-pdf"} <= keys
+        assert {"png", "jpg", "tif", "txt", "html", "md", "xlsx", "pptx", "searchable-pdf"} <= keys
 
     def test_list_targets_image(self, image_file: Path) -> None:
         options = list_targets(image_file)
@@ -125,6 +125,30 @@ class TestTextAndHtml:
         outputs = convert(text_pdf, "html", out_dir=tmp_path / "html")
         content = outputs[0].read_text(encoding="utf-8")
         assert "<html>" in content and "Hello PDF Toolbox" in content
+
+    def test_pdf_to_markdown_respects_page_selection(
+        self, text_pdf: Path, tmp_path: Path
+    ) -> None:
+        outputs = convert(text_pdf, "markdown", out_dir=tmp_path / "md", pages=[2])
+        assert outputs[0].name == "sample_pdfx.md"
+        content = outputs[0].read_text(encoding="utf-8")
+        assert content.startswith("## Page 2\n")
+        assert "Page two content" in content
+        assert "Hello PDF Toolbox" not in content
+        with pytest.raises(ConversionError, match="out of range"):
+            convert(text_pdf, "md", out_dir=tmp_path / "bad", pages=[3])
+
+    def test_pdf_to_markdown_preserves_literal_markup(self, tmp_path: Path) -> None:
+        from reportlab.pdfgen import canvas
+
+        source = tmp_path / "markup.pdf"
+        pdf = canvas.Canvas(str(source))
+        pdf.drawString(72, 720, "# Heading *not bold* <tag>")
+        pdf.save()
+        output = convert(source, "md", out_dir=tmp_path / "md")[0]
+        content = output.read_text(encoding="utf-8")
+        assert r"\# Heading \*not bold\*" in content
+        assert "&lt;tag&gt;" in content
 
 
 class TestTables:

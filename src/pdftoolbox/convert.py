@@ -14,7 +14,7 @@ from .engines import images_pdf, markdown_pdf, office, pdf_merge, pdf_pptx, pdf_
 from .engines import pdf_tables, pdf_text, searchable_pdf, text_pdf
 from .engines import ocr as ocr_engine
 
-PDF_TARGETS = ["png", "jpg", "tif", "txt", "html", "xlsx", "pptx", "searchable-pdf", "docx"]
+PDF_TARGETS = ["png", "jpg", "tif", "txt", "html", "md", "xlsx", "pptx", "searchable-pdf", "docx"]
 TO_PDF_IMAGE_TARGET = "pdf"
 MERGE_TARGET = "merge"
 # Suffix appended to every converted file name: "report.pdf" -> "report_pdfx.txt".
@@ -27,7 +27,7 @@ OUTPUT_SUFFIX = "_pdfx"
 # to read - see _convert_from_pdf().
 # NOTE: png/jpg/tif/searchable-pdf are excluded on purpose: they either render
 # the page pixels or already run OCR themselves.
-OCR_FIRST_TARGETS = {"txt", "html", "xlsx", "pptx", "docx"}
+OCR_FIRST_TARGETS = {"txt", "html", "md", "xlsx", "pptx", "docx"}
 _ALIASES = {
     "jpeg": "jpg",
     "tiff": "tif",
@@ -216,8 +216,8 @@ def list_targets(src: Path, pdf_inputs: int = 0) -> list[TargetOption]:
             # listed first so a multi-PDF selection defaults to merging
             options.append(TargetOption(MERGE_TARGET, "PDF (merge all inputs)", True))
         options.extend(
-            TargetOption(key, key.upper(), True)
-            for key in ["png", "jpg", "tif", "txt", "html", "xlsx", "pptx", "searchable-pdf"]
+            TargetOption(key, "MARKDOWN" if key == "md" else key.upper(), True)
+            for key in ["png", "jpg", "tif", "txt", "html", "md", "xlsx", "pptx", "searchable-pdf"]
         )
         if "docx" in plugin_map:
             info = plugin_map["docx"]
@@ -359,7 +359,7 @@ def _convert_from_pdf(
     tag_dir = out_dir if out_dir is not None else src.parent
 
     if key in OCR_FIRST_TARGETS and not pdf_text.has_text_layer(src):
-        # NOTE: a pure scan has no text layer, so txt/html/xlsx/pptx/docx would
+        # NOTE: a pure scan has no text layer, so text-reading targets would
         # come out empty (or fail with "no tables"). OCR runs first and the
         # searchable copy stands in for the original.
         with tempfile.TemporaryDirectory(prefix="pdftoolbox-ocr-") as scratch:
@@ -413,6 +413,14 @@ def _dispatch_from_pdf(
 
     if key == "html":
         return [pdf_text.pdf_to_html(src, output_path(name_src, tag_dir, ".html"))]
+
+    if key == "md":
+        page_labels = [page.number for page in ocr_pages] if ocr_pages is not None else None
+        return [
+            pdf_text.pdf_to_markdown(
+                src, output_path(name_src, tag_dir, ".md"), pages, page_labels
+            )
+        ]
 
     if key == "xlsx":
         # NOTE: dpi only affects the illustration sheets; the table cells are

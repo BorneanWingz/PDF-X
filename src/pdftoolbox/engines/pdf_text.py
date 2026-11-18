@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from . import ConversionError
 
@@ -67,4 +69,37 @@ def pdf_to_html(src: Path, out_path: Path) -> Path:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(document, encoding="utf-8")
+    return out_path
+
+
+def pdf_to_markdown(
+    src: Path,
+    out_path: Path,
+    pages: list[int] | None = None,
+    page_labels: list[int] | None = None,
+) -> Path:
+    """Write extracted page text as Markdown, preserving literal text and line breaks."""
+    reader = _reader(src)
+    count = len(reader.pages)
+    selected = pages if pages else list(range(1, count + 1))
+    for number in selected:
+        if number < 1 or number > count:
+            raise ConversionError(f"page {number} out of range (1-{count})")
+    if page_labels is not None and len(page_labels) != count:
+        raise ConversionError("OCR page labels do not match the searchable PDF")
+
+    chunks = []
+    for number in selected:
+        try:
+            text = reader.pages[number - 1].extract_text() or ""
+        except (PdfReadError, OSError, ValueError) as exc:
+            raise ConversionError(f"cannot extract text from page {number}: {exc}") from exc
+        text = html.escape(text.strip(), quote=False)
+        text = re.sub(r"([\\`*_{}\[\]()#+.!|~>-])", r"\\\1", text)
+        text = "  \n".join(text.splitlines())
+        label = page_labels[number - 1] if page_labels is not None else number
+        chunks.append(f"## Page {label}\n\n{text}".rstrip())
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n\n".join(chunks) + "\n", encoding="utf-8")
     return out_path
