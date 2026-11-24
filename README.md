@@ -167,6 +167,15 @@ The About screen shows the version and author information. The author is
 | --- | --- |
 | PDF | PNG, JPG, TIF, TXT, HTML, MD, XLSX tables, PPTX, DOCX |
 | Scanned PDF | Searchable PDF, TXT, HTML, MD, XLSX, PPTX, DOCX |
+| --- | --- |
+| PDF | PNG, JPG, TIF, TXT, HTML, MD, XLSX tables, PPTX, DOCX |
+| Scanned PDF | Searchable PDF, TXT, HTML, MD, XLSX, PPTX, DOCX |
+
+<a href="https://makakami.com.my/app/pdf-x">
+  <img src="https://makakami.com.my/badge/pdf-x.svg"
+    alt="Listed on MakaKami"
+    width="150" height="40">
+</a>
 | Word/Writer formats | DOCX |
 | Spreadsheet formats | XLSX |
 | Presentation formats | PPTX |
